@@ -1,0 +1,39 @@
+// Condition: Detailed information about a condition, problem, diagnosis, or concern
+model Condition {
+  id          String   @id @default(uuid()) @db.Uuid
+  patientId   String   @db.Uuid
+  encounterId String?  @db.Uuid // Where was this diagnosed?
+  
+  clinicalStatus      ConditionClinicalStatus
+  verificationStatus  ConditionVerificationStatus
+  
+  category    String // PROBLEM-LIST-ITEM, ENCOUNTER-DIAGNOSIS
+  severity    String? // MILD, MODERATE, SEVERE
+  
+  code        String // ICD-10 or SNOMED code
+  display     String // "Acute Appendicitis"
+  
+  onsetDate   DateTime? @db.Timestamptz(6)
+  abatementDate DateTime? @db.Timestamptz(6) // When did it resolve?
+  
+  note        String? @db.Text
+  
+  // VERSIONING (Copy-on-Write)
+  isLatest          Boolean   @default(true)
+  version           Int       @default(1)
+  previousVersionId String?   @unique @db.Uuid
+  
+  // AUDIT
+  createdById String    @db.Uuid
+  
+  // Relations
+  patient     Patient @relation(fields: [patientId], references: [id])
+  encounter   Encounter? @relation(fields: [encounterId], references: [id])
+  
+  previousVersion   Condition?    @relation("ConditionHistory", fields: [previousVersionId], references: [id], onDelete: Restrict)
+  nextVersion       Condition?    @relation("ConditionHistory")
+  createdBy         User          @relation("ConditionCreator", fields: [createdById], references: [id])
+  
+  @@index([patientId, clinicalStatus, isLatest])
+  @@map("conditions")
+}

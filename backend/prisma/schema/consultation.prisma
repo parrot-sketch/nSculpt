@@ -1,0 +1,70 @@
+// Consultation: Patient visits and clinical encounters
+// Links patients to clinical documentation, orders, and procedures
+// CRITICAL: Consultation is created FROM a confirmed Appointment
+
+model Consultation {
+  id          String   @id @default(uuid()) @db.Uuid
+  consultationNumber String @unique @db.VarChar(50) // Human-readable consultation ID
+  
+  // Core relationships
+  patientId   String   @db.Uuid
+  doctorId    String   @db.Uuid // Primary consulting doctor
+  appointmentId String @unique @db.Uuid // REQUIRED: Consultation created from confirmed appointment
+  
+  // Consultation details
+  consultationType String @db.VarChar(50) // INITIAL, FOLLOW_UP, PRE_OP, POST_OP, EMERGENCY
+  chiefComplaint String? @db.Text
+  consultationDate DateTime @default(now()) @db.Timestamptz(6)
+  
+  // Status
+  status      ConsultationStatus   @default(SCHEDULED)
+  completedAt DateTime? @db.Timestamptz(6)
+  
+  // Clinical context
+  diagnosis   String?  @db.Text
+  notes       String?  @db.Text
+  followUpRequired Boolean @default(false)
+  followUpDate DateTime? @db.Date
+  
+  // Clinical decision outcome - explicit decision made during consultation
+  // CRITICAL: Must be set when consultation is finalized (status = PLAN_CREATED or CLOSED)
+  consultationOutcome ConsultationOutcome? // Nullable for backward compatibility
+  
+  // Billing
+  billable   Boolean   @default(true)
+  billed     Boolean   @default(false)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  updatedBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor      User     @relation("ConsultationDoctor", fields: [doctorId], references: [id])
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+  createdByUser User? @relation("ConsultationCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByUser User? @relation("ConsultationUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  consentInstances PatientConsentInstance[] // One-to-many: multiple consents possible (revisions, multiple procedures)
+  pdfConsents PDFConsent[] @relation("PDFConsentConsultation")
+  prescriptions Prescription[]
+  labOrders LabOrder[]
+  emrNotes EMRNote[]
+  procedurePlans ProcedurePlan[] // One-to-many: multiple procedures can be planned in one consultation
+  procedurePlanFollowUps ProcedurePlan[] @relation("ProcedurePlanFollowUp") // Follow-up consultations linked to procedure plans
+  followUpPlans FollowUpPlan[] // One-to-many: multiple follow-ups possible from one consultation
+  inventoryUsages InventoryUsage[]
+  medicationAdministrations MedicationAdministration[]
+  
+  @@index([consultationNumber])
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([appointmentId]) // Critical for linking consultation to appointment
+  @@index([consultationDate])
+  @@index([status])
+  @@index([consultationType])
+  @@index([consultationOutcome]) // For querying consultations by outcome
+  @@map("consultations")
+}

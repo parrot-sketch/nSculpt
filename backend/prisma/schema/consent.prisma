@@ -1,0 +1,806 @@
+// Consent: Complex Multi-Section Patient Consents
+// Granular clause-level consent tracking with immutable snapshots
+
+// PDF-Based Consent Workflow Enums
+enum ConsentStatus {
+  DRAFT
+  READY_FOR_SIGNATURE
+  PARTIALLY_SIGNED
+  SIGNED
+  REVOKED
+  EXPIRED
+  ARCHIVED
+}
+
+enum SignerType {
+  PATIENT
+  GUARDIAN
+  DOCTOR
+  NURSE_WITNESS
+  ADMIN
+}
+
+model ConsentTemplate {
+  id          String   @id @default(uuid()) @db.Uuid
+  templateCode String  @unique @db.VarChar(100) // e.g., "GENERAL_CONSENT_V1", "BREAST_AUG_V2"
+  name        String   @db.VarChar(500)
+  description String?  @db.Text
+  
+  // Template Type - NEW: Support General and Procedure-specific
+  templateType String  @db.VarChar(50) // GENERAL, PROCEDURE_SPECIFIC
+  // GENERAL = one-time consent (privacy, photography, etc.)
+  // PROCEDURE_SPECIFIC = requires per-procedure consent
+  
+  // Procedure linkage (if procedure-specific)
+  procedureCode String? @db.VarChar(50) // Single primary CPT code
+  applicableCPTCodes String[] // Array of CPT codes this template applies to
+  
+  version     String   @db.VarChar(50) // Semantic versioning: "1.0.0"
+  versionNumber Int    @default(1) // Incremental version number: 1, 2, 3...
+  isActive    Boolean  @default(true)
+  effectiveFrom DateTime @default(now()) @db.Timestamptz(6)
+  effectiveUntil DateTime? @db.Timestamptz(6)
+  
+  // Legal metadata
+  legalReviewDate DateTime? @db.Timestamptz(6)
+  approvedBy      String?   @db.VarChar(200)
+  
+  // Original document preservation - NEW: Preserve exact wording
+  originalDocumentPath String? @db.VarChar(1000) // Path to original uploaded PDF
+  originalDocumentHash String? @db.VarChar(64) // SHA-256 of original document
+  
+  // PDF Workflow Support
+  fileUrl       String?  @db.VarChar(1000) // Stored PDF template file URL
+  placeholders  Json?    // List of supported placeholder fields: ["PATIENT_NAME", "DATE", "PROCEDURE_NAME", etc.]
+  
+  // Relations for PDF workflow
+  pdfConsents   PDFConsent[] // PDF-based consents using this template
+  
+  // Audit
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+  createdBy   String?   @db.Uuid
+  lockVersion Int       @default(1) // Optimistic locking (renamed to avoid conflict with semantic version)
+  
+  // Relations
+  sections    ConsentSection[]
+  instances   PatientConsentInstance[]
+  requiredParties ConsentTemplateRequiredParty[] // NEW: Dynamic parties
+  documentSnapshots ConsentDocumentSnapshot[]
+  fillInFields ConsentFillInField[] @relation("TemplateFillInFields")
+  pages        ConsentPage[]
+  
+  @@index([templateCode, versionNumber])
+  @@index([templateType])
+  @@index([isActive])
+  @@index([procedureCode])
+  @@index([effectiveFrom, effectiveUntil])
+  @@map("consent_templates")
+}
+
+model ConsentSection {
+  id          String   @id @default(uuid()) @db.Uuid
+  templateId  String   @db.Uuid
+  sectionCode String   @db.VarChar(100) // e.g., "RISKS", "ALTERNATIVES", "ANESTHESIA", "PHOTOS"
+  title       String   @db.VarChar(500)
+  description String?  @db.Text
+  content     String?  @db.Text // Structured content (markdown/HTML)
+  plainLanguageContent String? @db.Text // Simplified version for better understanding
+  order       Int      @db.Integer // Display order
+  
+  required    Boolean  @default(true) // Must be acknowledged
+  requiresAcknowledgment Boolean @default(true)
+  
+  // Understanding check
+  requiresUnderstandingCheck Boolean @default(false)
+  understandingCheckPrompt String? @db.VarChar(500) // "Do you understand that results cannot be guaranteed?"
+  
+  // Display options
+  isExpandable Boolean @default(false) // Can be collapsed/expanded
+  showTooltip  Boolean @default(false) // Show help tooltip
+  
+  // Audit
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  version     Int       @default(1)
+  
+  // Relations
+  template    ConsentTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  clauses     ConsentClause[]
+  acknowledgments PatientConsentAcknowledgement[]
+  interactions ConsentInteraction[]
+  fillInFields ConsentFillInField[] @relation("SectionFillInFields")
+  // Note: Pages reference sections via sectionIds array, not explicit relation
+  
+  @@index([templateId])
+  @@index([sectionCode])
+  @@index([order])
+  @@map("consent_sections")
+}
+
+model ConsentClause {
+  id          String   @id @default(uuid()) @db.Uuid
+  sectionId   String   @db.Uuid
+  clauseCode  String   @db.VarChar(100) // e.g., "RISK_INFECTION", "RISK_SCARRING"
+  content     String   @db.Text // The actual clause text
+  
+  order       Int      @db.Integer
+  required    Boolean  @default(true)
+  requiresAcknowledgment Boolean @default(true)
+  
+  // Audit
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  version     Int       @default(1)
+  
+  // Relations
+  section     ConsentSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  acknowledgments PatientConsentAcknowledgement[]
+  interactions ConsentInteraction[]
+  fillInFields ConsentFillInField[] @relation("ClauseFillInFields")
+  
+  @@index([sectionId])
+  @@index([clauseCode])
+  @@index([order])
+  // Note: Full-text search can be added via raw SQL migration:
+  // CREATE INDEX consent_clauses_content_fulltext_idx ON consent_clauses USING gin(to_tsvector('english', content));
+  @@map("consent_clauses")
+}
+
+model PatientConsentInstance {
+  id          String   @id @default(uuid()) @db.Uuid
+  instanceNumber String @unique @db.VarChar(50) // Human-readable: "CONSENT-2024-001"
+  templateId  String   @db.Uuid
+  templateVersion String @db.VarChar(50) // Captured version at time of consent: "1.0.0"
+  patientId   String   @db.Uuid
+  
+  // Consent status lifecycle
+  status      String   @default("DRAFT") @db.VarChar(50) 
+  // DRAFT, IN_PROGRESS, PENDING_SIGNATURES, SIGNED, REVOKED, EXPIRED, SUPERSEDED
+  // PENDING_SIGNATURES = some parties signed, waiting for others
+  
+  signedAt    DateTime? @db.Timestamptz(6) // When ALL required parties signed
+  revokedAt   DateTime? @db.Timestamptz(6)
+  expiresAt   DateTime? @db.Timestamptz(6)
+  validUntil  DateTime? @db.Date // Procedure must occur before this date
+  
+  // CRITICAL: Event anchoring for revocation
+  revocationEventId String? @db.Uuid
+  
+  // Relationships
+  relatedCaseId String? @db.Uuid // Optional link to SurgicalCase (set after surgery scheduled)
+  relatedRecordId String? @db.Uuid // Optional link to MedicalRecord
+  consultationId String @db.Uuid // REQUIRED: Link to Consultation (consent happens during/after consultation)
+  procedurePlanId String @unique @db.Uuid // REQUIRED: Link to ProcedurePlan (one-to-one: one consent per plan)
+  
+  // Context - REMOVED hardcoded signature fields (moved to ConsentSignature)
+  presentedBy String   @db.Uuid // User who presented consent to patient
+  revokedBy   String?  @db.Uuid // User who revoked consent (if revoked)
+  
+  // Relations for presentedBy and revokedBy
+  presentedByUser User? @relation("ConsentPresentedBy", fields: [presentedBy], references: [id])
+  revokedByUser User? @relation("ConsentRevokedBy", fields: [revokedBy], references: [id])
+  
+  // Understanding tracking
+  understandingChecksPassed Boolean @default(false)
+  questionsRaised Boolean @default(false)
+  allSectionsAcknowledged Boolean @default(false)
+  
+  // Language and accessibility
+  language    String   @default("en") @db.VarChar(10)
+  translated  Boolean  @default(false)
+  
+  // Re-consent tracking
+  supersededBy String? @db.Uuid // If this consent was replaced
+  supersedesId String? @db.Uuid // Previous consent this replaces
+  
+  notes       String?  @db.Text
+  
+  // Audit
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+  createdBy   String?   @db.Uuid
+  version     Int       @default(1)
+  
+  // Relations
+  template    ConsentTemplate @relation(fields: [templateId], references: [id])
+  patient     Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  procedurePlan ProcedurePlan @relation(fields: [procedurePlanId], references: [id], onDelete: Restrict)
+  signatures  ConsentSignature[] // NEW: All signatures for this instance
+  acknowledgments PatientConsentAcknowledgement[]
+  artifacts   ConsentArtifact[]
+  interactions ConsentInteraction[]
+  documentSnapshot ConsentDocumentSnapshot? // NEW: Exact wording preservation
+  versionHistories ConsentVersionHistory[] // NEW: Version tracking (one-to-many: multiple version histories possible)
+  previousVersions ConsentVersionHistory[] @relation("ConsentVersionHistoryPrevious") // NEW: Re-consent history
+  revocationEvent DomainEvent? @relation("ConsentRevocationEvent", fields: [revocationEventId], references: [id])
+  fillInValues ConsentFillInValue[] // NEW: Fill-in field values
+  structuredData ConsentStructuredData[] // NEW: Structured data (Botox tracking, CAPRINI, etc.)
+  pageAcknowledgments ConsentPageAcknowledgement[] // NEW: Page-level acknowledgments
+  
+  @@index([instanceNumber])
+  @@index([templateId])
+  @@index([patientId])
+  @@index([status])
+  @@index([signedAt])
+  @@index([revokedAt])
+  @@index([revocationEventId])
+  @@index([relatedCaseId])
+  @@index([consultationId])
+  @@index([procedurePlanId])
+  @@index([presentedBy])
+  @@index([revokedBy])
+  @@index([createdAt])
+  @@index([expiresAt])
+  @@map("patient_consent_instances")
+}
+
+model PatientConsentAcknowledgement {
+  id          String   @id @default(uuid()) @db.Uuid
+  instanceId  String   @db.Uuid
+  sectionId   String?  @db.Uuid // Optional: section-level acknowledgment
+  clauseId    String?  @db.Uuid // Optional: clause-level acknowledgment
+  
+  // Granular tracking
+  acknowledgedBy String @db.Uuid // User ID (patient or proxy)
+  acknowledgedAt DateTime @default(now()) @db.Timestamptz(6)
+  
+  // Content at time of acknowledgment (immutable snapshot)
+  sectionCode String?  @db.VarChar(100)
+  clauseCode  String?  @db.VarChar(100)
+  clauseContent String? @db.Text // Snapshot of clause text
+  
+  // Response
+  acknowledged Boolean  @default(true) // True = accepted, False = declined
+  declinedReason String? @db.Text
+  
+  // Understanding check (enhanced)
+  understandingCheckPassed Boolean @default(false)
+  understandingResponse String? @db.VarChar(50) // "YES", "NEED_DISCUSSION", "NO"
+  discussionRequired Boolean @default(false)
+  discussionCompleted Boolean @default(false)
+  discussedWith String? @db.Uuid // Clinician who discussed
+  
+  // Time and engagement tracking
+  timeSpentSeconds Int? @db.Integer // How long patient spent on section
+  scrollDepth Int? @db.Integer // Percentage of content scrolled (0-100)
+  
+  // Digital signature evidence
+  ipAddress   String?  @db.VarChar(45) // IPv4 or IPv6
+  userAgent   String?  @db.VarChar(500)
+  deviceType  String?  @db.VarChar(50) // TABLET, PHONE, DESKTOP
+  signatureHash String? @db.VarChar(64) // Hash of digital signature if applicable
+  
+  // Audit
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  version     Int       @default(1)
+  
+  // Relations
+  instance    PatientConsentInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  section     ConsentSection?        @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  clause      ConsentClause?         @relation(fields: [clauseId], references: [id], onDelete: SetNull)
+  
+  @@unique([instanceId, sectionId, clauseId]) // One acknowledgment per section/clause
+  @@index([instanceId])
+  @@index([sectionId])
+  @@index([clauseId])
+  @@index([acknowledgedBy])
+  @@index([acknowledgedAt])
+  @@map("patient_consent_acknowledgements")
+}
+
+model ConsentArtifact {
+  id          String   @id @default(uuid()) @db.Uuid
+  instanceId  String   @db.Uuid
+  
+  // Artifact is evidence, not source of truth
+  artifactType String  @db.VarChar(50) // PDF, SCREENSHOT, SIGNED_FORM
+  fileName    String   @db.VarChar(500)
+  filePath    String   @db.VarChar(1000)
+  fileSize    BigInt   @db.BigInt
+  mimeType    String   @db.VarChar(100)
+  
+  // Integrity verification
+  fileHash    String   @db.VarChar(64) // SHA-256
+  checksumVerifiedAt DateTime? @db.Timestamptz(6)
+  
+  // Metadata
+  generatedAt DateTime @default(now()) @db.Timestamptz(6)
+  generatedBy String   @db.Uuid
+  description String?  @db.Text
+  
+  // Audit
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  version     Int       @default(1)
+  
+  // Relations
+  instance    PatientConsentInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  
+  // Note: Access logs tracked via DataAccessLog.resourceType + resourceId (polymorphic)
+  
+  @@index([instanceId])
+  @@index([fileHash])
+  @@index([generatedAt])
+  @@map("consent_artifacts")
+}
+
+// Consent Interaction Log (Complete Audit Trail)
+// Tracks every user interaction with consent for legal defensibility
+model ConsentInteraction {
+  id          String   @id @default(uuid()) @db.Uuid
+  instanceId  String   @db.Uuid
+  
+  // Interaction details
+  interactionType String @db.VarChar(50) 
+  // VIEWED_SECTION, ACKNOWLEDGED_SECTION, ASKED_QUESTION, 
+  // REQUESTED_CLARIFICATION, SIGNED, WITHDRAWN, UPDATED, 
+  // UNDERSTANDING_CHECK, DISCUSSION_COMPLETED
+  
+  sectionId   String?  @db.Uuid // Which section (if applicable)
+  clauseId    String?  @db.Uuid // Which clause (if applicable)
+  
+  // User
+  userId      String   @db.Uuid // Who performed action
+  userRole    String   @db.VarChar(50) // PATIENT, SURGEON, NURSE, ADMIN, etc.
+  
+  // Details
+  details     Json?    // Additional context (questions asked, responses, etc.)
+  ipAddress   String?  @db.VarChar(50)
+  userAgent   String?  @db.VarChar(500)
+  deviceType  String?  @db.VarChar(50) // TABLET, PHONE, DESKTOP
+  
+  // Timestamp
+  occurredAt  DateTime @default(now()) @db.Timestamptz(6)
+  
+  // Relations
+  instance    PatientConsentInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  section     ConsentSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  clause      ConsentClause? @relation(fields: [clauseId], references: [id], onDelete: SetNull)
+  
+  @@index([instanceId])
+  @@index([userId])
+  @@index([interactionType])
+  @@index([sectionId])
+  @@index([occurredAt])
+  @@map("consent_interactions")
+}
+
+// ============================================================================
+// NEW MODELS FOR DYNAMIC PARTIES AND EXACT WORDING PRESERVATION
+// ============================================================================
+
+// Dynamic Party Requirements per Template
+// Allows toggling which parties must sign for each consent template
+model ConsentTemplateRequiredParty {
+  id          String   @id @default(uuid()) @db.Uuid
+  templateId  String   @db.Uuid
+  
+  partyType   String   @db.VarChar(50) 
+  // PATIENT, GUARDIAN, SURGEON, ANESTHESIOLOGIST, WITNESS, ADMIN
+  
+  required    Boolean  @default(true) // Must sign (true) or optional (false)?
+  order       Int      @db.Integer // Display/signing order (1 = first, 2 = second, etc.)
+  
+  // Notes
+  notes       String?  @db.Text // Why this party is required
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations
+  template    ConsentTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  
+  @@unique([templateId, partyType]) // One entry per party type per template
+  @@index([templateId])
+  @@index([partyType])
+  @@map("consent_template_required_parties")
+}
+
+// Individual Signature by Each Party
+// Separate record for each party's signature (patient, surgeon, witness, etc.)
+model ConsentSignature {
+  id          String   @id @default(uuid()) @db.Uuid
+  instanceId  String   @db.Uuid
+  
+  // Who signed
+  partyType   String   @db.VarChar(50) 
+  // PATIENT, GUARDIAN, SURGEON, ANESTHESIOLOGIST, WITNESS, ADMIN
+  signedBy    String   @db.Uuid // User ID (patient user, surgeon user, etc.)
+  
+  // Signature details
+  signedAt    DateTime @default(now()) @db.Timestamptz(6)
+  signatureMethod String @db.VarChar(50) // DIGITAL, ELECTRONIC, PHYSICAL
+  signatureData String? @db.Text // Base64 signature image, or digital signature payload
+  
+  // Context for legal defensibility
+  ipAddress   String?  @db.VarChar(50)
+  userAgent   String?  @db.VarChar(500)
+  deviceType  String?  @db.VarChar(50) // TABLET, PHONE, DESKTOP, PAPER
+  
+  // Legal evidence
+  signatureHash String? @db.VarChar(64) // SHA-256 of signature for integrity verification
+  
+  // For guardian signatures
+  guardianRelationship String? @db.VarChar(100) // "PARENT", "LEGAL_GUARDIAN", "SPOUSE", etc.
+  guardianConsentFor String? @db.Uuid // Patient ID if guardian signing for minor/incapacitated
+  
+  // Notes
+  notes       String?  @db.Text
+  
+  // Audit - IMMUTABLE after creation
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  version     Int      @default(1) // Always 1 - immutable after creation
+  
+  // Relations
+  instance    PatientConsentInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  
+  @@unique([instanceId, partyType]) // One signature per party type per instance
+  @@index([instanceId])
+  @@index([signedBy])
+  @@index([partyType])
+  @@index([signedAt])
+  @@map("consent_signatures")
+}
+
+// Document Snapshot - Preserves Exact Wording at Time of Signing
+// Critical for legal defensibility - stores exact text patient signed
+model ConsentDocumentSnapshot {
+  id          String   @id @default(uuid()) @db.Uuid
+  instanceId  String   @db.Uuid
+  templateId  String   @db.Uuid // Template used
+  
+  // Full document text - EXACT wording as signed (TEXT field, not JSON)
+  fullDocumentText String @db.Text 
+  // Entire consent document text as it appeared when patient signed
+  // This preserves exact wording for legal requirements
+  
+  // Section snapshots - Structured view of sections (for queryability)
+  sectionSnapshots Json? 
+  // Array format: [
+  //   {sectionCode: "RISKS", exactText: "The risks include...", order: 1},
+  //   {sectionCode: "ALTERNATIVES", exactText: "Alternatives include...", order: 2}
+  // ]
+  // JSON is for queryability, but fullDocumentText is the source of truth
+  
+  // Template version at time of signing
+  templateVersion String @db.VarChar(50) // "1.0.0"
+  templateVersionNumber Int @db.Integer // 1, 2, 3...
+  
+  // When this snapshot was created (at signing time)
+  snapshottedAt DateTime @default(now()) @db.Timestamptz(6)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  version     Int      @default(1) // Always 1 - immutable after creation
+  
+  // Relations
+  instance    PatientConsentInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  template    ConsentTemplate @relation(fields: [templateId], references: [id])
+  
+  @@unique([instanceId]) // One snapshot per instance
+  @@index([instanceId])
+  @@index([templateId])
+  @@index([snapshottedAt])
+  @@map("consent_document_snapshots")
+}
+
+// Version History - Tracks Re-Consents and Changes
+// When a consent is superseded by a new consent, this tracks the relationship
+model ConsentVersionHistory {
+  id          String   @id @default(uuid()) @db.Uuid
+  instanceId  String   @db.Uuid // Current/new consent instance
+  
+  // Version details
+  versionNumber Int    @db.Integer // 1, 2, 3... (sequential version)
+  previousInstanceId String? @db.Uuid // Previous consent instance (if re-consent)
+  
+  // What changed
+  changeReason String? @db.Text // Why re-consent was needed
+  // Examples: "Procedure plan changed", "New risks identified", "Template updated"
+  changesSummary String? @db.Text // Summary of changes made
+  
+  // When
+  versionCreatedAt DateTime @default(now()) @db.Timestamptz(6)
+  createdBy String? @db.Uuid // Who created this version
+  
+  // Relations
+  instance    PatientConsentInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  previousInstance PatientConsentInstance? @relation("ConsentVersionHistoryPrevious", fields: [previousInstanceId], references: [id])
+  
+  @@index([instanceId])
+  @@index([previousInstanceId])
+  @@index([versionCreatedAt])
+  @@map("consent_version_history")
+}
+
+// ============================================================================
+// CONSENT ENHANCEMENTS: Fill-in Fields, Structured Data, Page Tracking
+// ============================================================================
+
+// Fill-in fields within consent content
+// Supports dynamic content like "___PROCEDURE_NAME___" or "{{SURGEON_NAME}}"
+model ConsentFillInField {
+  id          String   @id @default(uuid()) @db.Uuid
+  templateId  String?  @db.Uuid // Template-level defaults
+  sectionId   String?  @db.Uuid // Section-level field
+  clauseId    String?  @db.Uuid // Clause-level field
+  
+  fieldCode   String   @db.VarChar(100) // e.g., "PROCEDURE_NAME", "SURGEON_NAME", "SPECIFIC_RISK_1"
+  fieldType   String   @db.VarChar(50)  // TEXT, DATE, NUMBER, SELECT, MULTILINE
+  label       String   @db.VarChar(500)
+  placeholder String?  @db.VarChar(500)
+  defaultValue String? @db.Text // Template default
+  required    Boolean  @default(false)
+  order       Int      @db.Integer
+  
+  // For SELECT type
+  options     String[] // Available options (e.g., ["Dr. Smith", "Dr. Jones"])
+  
+  // Position in content (for rendering)
+  contentMarker String @db.VarChar(200) // e.g., "___PROCEDURE_NAME___" or "{{PROCEDURE_NAME}}"
+  
+  // Help text
+  helpText    String?  @db.Text
+  
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations - Must have exactly one parent (template, section, or clause)
+  template    ConsentTemplate? @relation("TemplateFillInFields", fields: [templateId], references: [id], onDelete: Cascade)
+  section     ConsentSection?  @relation("SectionFillInFields", fields: [sectionId], references: [id], onDelete: Cascade)
+  clause      ConsentClause?   @relation("ClauseFillInFields", fields: [clauseId], references: [id], onDelete: Cascade)
+  instanceValues ConsentFillInValue[]
+  
+  @@index([templateId])
+  @@index([sectionId])
+  @@index([clauseId])
+  @@index([fieldCode])
+  @@map("consent_fill_in_fields")
+}
+
+// Values filled in for a specific consent instance
+model ConsentFillInValue {
+  id          String   @id @default(uuid()) @db.Uuid
+  instanceId  String   @db.Uuid
+  fieldId     String   @db.Uuid
+  
+  value       String   @db.Text // The filled-in value
+  filledBy    String   @db.Uuid // User who filled it (doctor/admin)
+  filledAt    DateTime @default(now()) @db.Timestamptz(6)
+  
+  // Relations
+  instance    PatientConsentInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  field       ConsentFillInField     @relation(fields: [fieldId], references: [id])
+  
+  @@unique([instanceId, fieldId]) // One value per field per instance
+  @@index([instanceId])
+  @@index([fieldId])
+  @@map("consent_fill_in_values")
+}
+
+// Structured data tables (for Botox tracking, CAPRINI assessment, etc.)
+// Stores complex structured data as JSON with schema validation
+model ConsentStructuredData {
+  id          String   @id @default(uuid()) @db.Uuid
+  instanceId  String   @db.Uuid
+  dataType    String   @db.VarChar(100) // "BOTOX_TRACKING", "CAPRINI_ASSESSMENT", etc.
+  schema      String   @db.Text // JSON schema definition (for validation)
+  data        String   @db.Text // JSON data (validated against schema)
+  
+  // Who created/filled this
+  createdBy   String   @db.Uuid
+  updatedBy   String?  @db.Uuid
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations
+  instance    PatientConsentInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  
+  @@unique([instanceId, dataType]) // One structured data per type per instance
+  @@index([instanceId])
+  @@index([dataType])
+  @@map("consent_structured_data")
+}
+
+// Page-level structure (for multi-page consents)
+// Tracks which sections/clauses appear on which pages
+model ConsentPage {
+  id          String   @id @default(uuid()) @db.Uuid
+  templateId  String   @db.Uuid
+  
+  pageNumber  Int      @db.Integer // 1, 2, 3...
+  title       String?  @db.VarChar(500)
+  content     String?  @db.Text // Full page content (markdown/HTML) - for rendering
+  
+  // Which sections/clauses are on this page (many-to-many)
+  sectionIds  String[] // Array of section IDs
+  clauseIds   String[] // Array of clause IDs
+  
+  requiresInitials Boolean @default(true) // Does this page need patient initials?
+  
+  order       Int      @db.Integer // Display order
+  
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations
+  template    ConsentTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  acknowledgments ConsentPageAcknowledgement[]
+  
+  @@index([templateId])
+  @@index([pageNumber])
+  @@map("consent_pages")
+}
+
+// Page-level acknowledgments (initials)
+// Tracks patient initials on each page
+model ConsentPageAcknowledgement {
+  id          String   @id @default(uuid()) @db.Uuid
+  instanceId  String   @db.Uuid
+  pageId      String   @db.Uuid
+  
+  acknowledgedBy String @db.Uuid // Patient
+  acknowledgedAt DateTime @default(now()) @db.Timestamptz(6)
+  
+  // Digital initials (signature image/data)
+  initialsData String? @db.Text // Base64 signature or digital signature data
+  
+  // Engagement tracking
+  timeSpentSeconds Int? @db.Integer // How long patient spent on page
+  scrollDepth Int? @db.Integer // Percentage of content scrolled (0-100)
+  
+  // Digital signature evidence
+  ipAddress   String?  @db.VarChar(45) // IPv4 or IPv6
+  userAgent   String?  @db.VarChar(500)
+  deviceType  String?  @db.VarChar(50) // TABLET, PHONE, DESKTOP
+  
+  // Relations
+  instance    PatientConsentInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  page        ConsentPage @relation(fields: [pageId], references: [id])
+  
+  @@unique([instanceId, pageId]) // One acknowledgment per page per instance
+  @@index([instanceId])
+  @@index([pageId])
+  @@map("consent_page_acknowledgements")
+}
+
+// ============================================================================
+// PDF-BASED CONSENT WORKFLOW MODELS
+// ============================================================================
+// Simplified PDF template-based consent workflow for medical legal compliance
+// Supports PDF upload, placeholder merging, multi-signer workflow, and immutable final documents
+
+// PDF Consent - Generated from PDF template for specific patient/consultation
+model PDFConsent {
+  id               String         @id @default(uuid()) @db.Uuid
+  patientId        String         @db.Uuid
+  consultationId   String?        @db.Uuid
+  templateId       String         @db.Uuid
+  status           ConsentStatus  @default(DRAFT)
+  
+  // PDF Documents
+  generatedPdfUrl  String?        @db.VarChar(1000) // Working document before signing (editable)
+  finalPdfUrl      String?        @db.VarChar(1000) // Immutable signed version (locked)
+  finalPdfHash     String?        @db.VarChar(64)   // SHA-256 hash of final PDF for integrity verification
+  
+  // Workflow tracking
+  sentForSignatureAt DateTime?     @db.Timestamptz(6)
+  lockedAt         DateTime?       @db.Timestamptz(6) // When document was locked after signing
+  
+  // Annotation State
+  annotationVersion Int           @default(1) @db.Integer // Increments on annotation changes
+  lastAnnotationAt  DateTime?     @db.Timestamptz(6) // Last annotation timestamp
+  
+  // Audit
+  createdById      String         @db.Uuid
+  createdBy        User           @relation("PDFConsentCreator", fields: [createdById], references: [id])
+  archivedAt       DateTime?      @db.Timestamptz(6)
+  archivedById     String?        @db.Uuid
+  archivedBy       User?          @relation("PDFConsentArchivedBy", fields: [archivedById], references: [id])
+  version          Int            @default(1)
+  createdAt        DateTime       @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime       @updatedAt @db.Timestamptz(6)
+  
+  // Relations
+  template         ConsentTemplate @relation(fields: [templateId], references: [id])
+  patient          Patient         @relation("PDFConsentPatient", fields: [patientId], references: [id], onDelete: Restrict)
+  consultation     Consultation?   @relation("PDFConsentConsultation", fields: [consultationId], references: [id])
+  signatures       PDFConsentSignature[]
+  annotations      PDFConsentAnnotation[]
+  
+  @@index([patientId])
+  @@index([consultationId])
+  @@index([templateId])
+  @@index([status])
+  @@index([createdById])
+  @@index([archivedAt])
+  @@map("pdf_consents")
+}
+
+// PDF Consent Signature - Multi-signer support
+model PDFConsentSignature {
+  id          String     @id @default(uuid()) @db.Uuid
+  consentId   String     @db.Uuid
+  signerId    String?    @db.Uuid // User ID (nullable for external signers)
+  signerName  String     @db.VarChar(200) // Full name of signer
+  signerType  SignerType
+  signatureUrl String    @db.VarChar(1000) // URL to signature image/data
+  
+  // PDF Position (for inline signature placement)
+  pageNumber  Int?       @db.Integer // Page where signature is placed (1-indexed)
+  x           Float?     @db.DoublePrecision // X coordinate (PDF points)
+  y           Float?     @db.DoublePrecision // Y coordinate (PDF points)
+  width       Float?     @db.DoublePrecision // Signature width (PDF points)
+  height      Float?     @db.DoublePrecision // Signature height (PDF points)
+  
+  // Signature metadata
+  signedAt    DateTime   @default(now()) @db.Timestamptz(6)
+  ipAddress  String?    @db.VarChar(45) // IPv4 or IPv6
+  deviceInfo String?    @db.VarChar(500) // Device information
+  userAgent  String?    @db.VarChar(500) // Browser/user agent string
+  
+  // Cryptographic Integrity
+  signatureHash String?  @db.VarChar(64) // SHA-256 hash of signature data
+  
+  // Relations
+  consent     PDFConsent @relation(fields: [consentId], references: [id], onDelete: Cascade)
+  signer      User?      @relation("PDFConsentSigner", fields: [signerId], references: [id])
+  
+  @@index([consentId])
+  @@index([signerId])
+  @@index([signerType])
+  @@index([signedAt])
+  @@map("pdf_consent_signatures")
+}
+
+// Add relations to existing models
+// Note: These will be added to the respective model definitions
+
+
+// PDF Consent Annotation System
+enum AnnotationType {
+  HIGHLIGHT
+  COMMENT
+  TEXT_EDIT
+  DRAWING
+  ARROW
+  RECTANGLE
+  CIRCLE
+  SIGNATURE
+}
+
+model PDFConsentAnnotation {
+  id              String    @id @default(uuid()) @db.Uuid
+  consentId       String    @db.Uuid
+  annotationType  AnnotationType
+  pageNumber      Int       @db.Integer
+  x               Float     @db.DoublePrecision
+  y               Float     @db.DoublePrecision
+  width           Float?    @db.DoublePrecision
+  height          Float?    @db.DoublePrecision
+  coordinates     Json?     @db.JsonB
+  content         String?   @db.Text
+  color           String    @default("#000000") @db.VarChar(7)
+  createdById     String    @db.Uuid
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt       DateTime? @db.Timestamptz(6)
+  isImmutable     Boolean   @default(false)
+  
+  consent         PDFConsent @relation(fields: [consentId], references: [id], onDelete: Cascade)
+  createdBy       User       @relation("PDFConsentAnnotationCreator", fields: [createdById], references: [id])
+  
+  createdEventId  String?   @db.Uuid
+  deletedEventId  String?   @db.Uuid
+  
+  @@index([consentId])
+  @@index([createdById])
+  @@index([pageNumber])
+  @@index([annotationType])
+  @@index([deletedAt])
+  @@index([isImmutable])
+  @@index([consentId, pageNumber])
+  @@map("pdf_consent_annotations")
+}

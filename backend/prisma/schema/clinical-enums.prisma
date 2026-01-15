@@ -1,0 +1,26 @@
+// Clinical Enums: Standardized status codes for clinical workflows
+// Aligned with FHIR value sets
+
+enum ObservationStatus {
+  PRELIMINARY      // Result is incomplete or unverified
+  FINAL            // Result is complete and verified
+  AMENDED          // Result has been modified subsequent to being Final
+  ENTERED_IN_ERROR // The observation was recorded incorrectly and should be ignored
+}
+
+enum ConditionClinicalStatus {
+  ACTIVE
+  RECURRENCE
+  RELAPSE
+  INACTIVE
+  REMISSION
+  RESOLVED
+}
+
+enum ConditionVerificationStatus {
+  PROVISIONAL
+  DIFFERENTIAL
+  CONFIRMED
+  REFUTED
+  ENTERED_IN_ERROR
+}

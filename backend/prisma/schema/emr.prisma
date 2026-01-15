@@ -1,0 +1,62 @@
+// EMR Notes: Append-only clinical documentation
+// Tied to consultations and patients with role-based access control
+
+enum NoteType {
+  NURSE_TRIAGE
+  DOCTOR_SOAP
+  ADDENDUM
+}
+
+model EMRNote {
+  id                String   @id @default(uuid()) @db.Uuid
+  patientId         String   @db.Uuid
+  consultationId     String   @db.Uuid
+  encounterId        String?  @db.Uuid // Phase 3: Linked to parent encounter
+  authorId           String   @db.Uuid
+  
+  noteType          NoteType
+  content           String   @db.Text
+  
+  // Addendum support (non-destructive edits)
+  parentNoteId      String?  @db.Uuid // For addendums only
+  parentNote        EMRNote? @relation("NoteAddendumRelation", fields: [parentNoteId], references: [id], onDelete: Restrict)
+  addendums         EMRNote[] @relation("NoteAddendumRelation")
+  
+  // Locking: Notes are editable for 10 minutes, then locked
+  locked            Boolean  @default(false)
+  
+  // Audit
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(6)
+  createdBy         String   @db.Uuid
+  updatedBy         String?  @db.Uuid
+  
+  // Soft delete
+  archived          Boolean  @default(false)
+  archivedAt        DateTime? @db.Timestamptz(6)
+  archivedBy        String?  @db.Uuid
+  
+  // Optimistic locking
+  version           Int      @default(1)
+  
+  // Relations
+  patient           Patient  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  consultation      Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  encounter         Encounter?   @relation(fields: [encounterId], references: [id], onDelete: Restrict)
+  author            User     @relation("EMRNoteAuthor", fields: [authorId], references: [id])
+  
+  @@index([patientId])
+  @@index([consultationId])
+  @@index([noteType])
+  @@index([authorId])
+  @@index([archived])
+  @@index([parentNoteId])
+  @@index([createdAt])
+  @@index([archivedAt])
+  @@index([locked])
+  @@map("emr_notes")
+}
+
+
+
+

@@ -1,0 +1,129 @@
+// Appointment: Time Slot Booking System
+// Payment-confirmed appointment scheduling for consultations
+// CRITICAL: Appointment booking requires payment confirmation
+
+// Appointment status workflow
+enum AppointmentStatus {
+  REQUESTED          // Patient requested, no slot assigned yet
+  PENDING_PAYMENT    // Patient requested, waiting for payment
+  PAYMENT_PENDING    // Payment initiated but not confirmed
+  SCHEDULED          // Slot assigned, awaiting doctor confirmation
+  CONFIRMED          // Payment confirmed, appointment booked
+  NEEDS_RESCHEDULE   // Doctor requested change to assigned slot
+  CHECKED_IN         // Patient arrived, appointment started
+  COMPLETED          // Appointment completed (becomes Consultation)
+  CANCELLED          // Cancelled before payment
+  CANCELLED_AFTER_PAYMENT // Cancelled after payment (refund policy applies)
+  NO_SHOW            // Patient didn't show up
+  RESCHEDULED        // Appointment rescheduled to new time
+}
+
+// Cancellation reason categories
+enum CancellationReason {
+  PATIENT_REQUEST
+  DOCTOR_UNAVAILABLE
+  EMERGENCY
+  WEATHER
+  OTHER
+}
+
+// Appointment: Time slot booking (payment-required)
+// This is the SCHEDULING layer - Consultation is the CLINICAL layer
+model Appointment {
+  id          String   @id @default(uuid()) @db.Uuid
+  appointmentNumber String @unique @db.VarChar(50) // Human-readable: "APT-2026-00001"
+  
+  // Core relationships
+  patientId   String   @db.Uuid
+  doctorId   String   @db.Uuid // Doctor for the appointment
+  
+  // Time slot
+  scheduledDate DateTime? @db.Date
+  scheduledStartTime DateTime? @db.Timestamptz(6) // Exact start time
+  scheduledEndTime   DateTime? @db.Timestamptz(6) // Exact end time
+  estimatedDurationMinutes Int @default(30) @db.Integer // Default 30 min for consultation
+  
+  // Appointment type
+  appointmentType String @db.VarChar(50) // CONSULTATION, FOLLOW_UP, PRE_OP, POST_OP, EMERGENCY
+  reason        String?  @db.Text // Patient's reason for appointment
+  serviceCode   String?  @db.VarChar(100) // The primary clinical service area in focus
+  
+  // Status workflow
+  status        AppointmentStatus @default(PENDING_PAYMENT)
+  
+  // CRITICAL: Payment confirmation required
+  consultationFee Decimal? @db.Decimal(10, 2) // Consultation fee amount
+  paymentId      String?  @unique @db.Uuid // Payment that confirmed this appointment (one-to-one)
+  paymentConfirmedAt DateTime? @db.Timestamptz(6) // When payment was confirmed
+  
+  // Consultation link (created when appointment is completed)
+  consultationId String? @unique @db.Uuid // One appointment → one consultation
+  
+  // Cancellation tracking
+  cancelledAt    DateTime? @db.Timestamptz(6)
+  cancelledBy    String?  @db.Uuid // Patient or staff
+  cancellationReason CancellationReason? 
+  cancellationNotes String? @db.Text
+  refundIssued  Boolean  @default(false) // If payment was refunded
+  refundAmount  Decimal? @db.Decimal(10, 2)
+  refundPaymentId String? @unique @db.Uuid // Payment record for refund (one-to-one)
+  
+  // Rescheduling
+  rescheduledFrom String? @unique @db.Uuid // Previous appointment ID if rescheduled (one-to-one)
+  rescheduledTo   String? @db.Uuid // New appointment ID if rescheduled
+  rescheduledAt   DateTime? @db.Timestamptz(6)
+  rescheduledBy   String?  @db.Uuid
+  
+  // Check-in tracking
+  checkedInAt     DateTime? @db.Timestamptz(6)
+  checkedInBy     String?  @db.Uuid // Front desk staff
+  
+  // Reminders
+  reminderSentAt  DateTime? @db.Timestamptz(6)
+  reminderCount   Int      @default(0) @db.Integer
+  
+  // Notes
+  notes           String?  @db.Text
+  internalNotes   String?  @db.Text // Staff-only notes
+  
+  // Audit
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+  createdBy       String?  @db.Uuid // Front desk staff who created
+  updatedBy       String?  @db.Uuid
+  version         Int      @default(1)
+  
+  // Relations
+  patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor          User     @relation("AppointmentDoctor", fields: [doctorId], references: [id])
+  payment         Payment? @relation("AppointmentPayment", fields: [paymentId], references: [id])
+  refundPayment   Payment? @relation("AppointmentRefund", fields: [refundPaymentId], references: [id])
+  consultation    Consultation? @relation // One-to-one: defined on Consultation side
+  cancelledByUser User?    @relation("AppointmentCancelledBy", fields: [cancelledBy], references: [id])
+  rescheduledByUser User?  @relation("AppointmentRescheduledBy", fields: [rescheduledBy], references: [id])
+  checkedInByUser User?    @relation("AppointmentCheckedInBy", fields: [checkedInBy], references: [id])
+  previousAppointment Appointment? @relation("AppointmentReschedule", fields: [rescheduledFrom], references: [id])
+  nextAppointment Appointment? @relation("AppointmentReschedule")
+  followUpPlan FollowUpPlan? // Link to follow-up plan if this appointment is a follow-up
+  
+  // FrontDesk Redesign Relations
+  visits        ClinicVisit[]
+  invoices      Invoice[]
+  statusHistory AppointmentStatusHistory[]
+  
+  // Phase 3
+  encounter       Encounter?
+  
+  @@index([appointmentNumber])
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([scheduledDate])
+  @@index([scheduledStartTime, scheduledEndTime])
+  @@index([status])
+  @@index([paymentId])
+  @@index([consultationId])
+  @@index([appointmentType])
+  @@index([createdAt])
+  @@map("appointments")
+}
+

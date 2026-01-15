@@ -1,0 +1,49 @@
+// Consultation Request: Patient requests for specialist consultation
+// Supports consultation request workflow for lifecycle validation
+
+enum ConsultationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model ConsultationRequest {
+  id          String   @id @default(uuid()) @db.Uuid
+  patientId   String   @db.Uuid
+  specialistId String? @db.Uuid // Optional: specific specialist requested (references User)
+  
+  // Status
+  status      ConsultationRequestStatus @default(PENDING)
+  
+  // Timestamps
+  requestedAt DateTime @default(now()) @db.Timestamptz(6)
+  approvedAt  DateTime? @db.Timestamptz(6)
+  approvedBy  String?  @db.Uuid // Admin, Doctor, or Surgeon who approved
+  rejectedAt  DateTime? @db.Timestamptz(6)
+  rejectedBy  String?  @db.Uuid
+  rejectionReason String? @db.Text
+  
+  // Request details
+  reason      String?  @db.Text // Patient's reason for consultation request
+  preferredDate DateTime? @db.Date
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  specialist  User?    @relation("ConsultationRequestSpecialist", fields: [specialistId], references: [id], onDelete: SetNull)
+  approvedByUser User? @relation("ConsultationRequestApprovedBy", fields: [approvedBy], references: [id], onDelete: SetNull)
+  rejectedByUser User? @relation("ConsultationRequestRejectedBy", fields: [rejectedBy], references: [id], onDelete: SetNull)
+  
+  @@index([patientId])
+  @@index([status])
+  @@index([requestedAt])
+  @@index([approvedAt])
+  @@index([specialistId])
+  @@map("consultation_requests")
+}
+

@@ -1,0 +1,363 @@
+// Inventory: Event-Driven Stock Management
+// Append-only transactions with full clinical traceability
+
+model InventoryCategory {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50) // e.g., "EQUIPMENT", "SUPPLIES", "IMPLANTS"
+  name        String   @db.VarChar(200)
+  description String?  @db.Text
+  parentId    String?  @db.Uuid // For hierarchical categories
+  
+  active      Boolean  @default(true)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations
+  parent      InventoryCategory? @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    InventoryCategory[] @relation("CategoryHierarchy")
+  items       InventoryItem[]
+  
+  @@index([code])
+  @@index([parentId])
+  @@index([active])
+  @@map("inventory_categories")
+}
+
+model InventoryItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  itemNumber  String   @unique @db.VarChar(100) // SKU or part number
+  name        String   @db.VarChar(500)
+  description String?  @db.Text
+  
+  // Classification
+  categoryId  String   @db.Uuid
+  itemType    String   @db.VarChar(50) // EQUIPMENT, SUPPLY, IMPLANT, CONSUMABLE
+  
+  // Vendor information
+  vendorId    String?  @db.Uuid
+  vendorPartNumber String? @db.VarChar(100)
+  manufacturerName String? @db.VarChar(200)
+  manufacturerPartNumber String? @db.VarChar(100)
+  
+  // Pricing (denormalized from fee schedules)
+  unitCost    Decimal? @db.Decimal(10, 2)
+  unitPrice   Decimal? @db.Decimal(10, 2) // Selling price if billable
+  
+  // Units
+  unitOfMeasure String @db.VarChar(50) // EACH, BOX, CASE, PACK, KIT
+  
+  // Reorder management
+  reorderPoint Decimal? @db.Decimal(10, 3)
+  reorderQuantity Decimal? @db.Decimal(10, 3)
+  maxStock    Decimal? @db.Decimal(10, 3)
+  
+  // Tracking requirements
+  trackSerialNumber Boolean @default(false)
+  trackLotNumber    Boolean @default(false)
+  trackExpiration   Boolean @default(false)
+  trackBatch        Boolean @default(false) // Track batches separately
+  
+  // Equipment-specific
+  isEquipment Boolean  @default(false)
+  equipmentType String? @db.VarChar(100)
+  requiresCalibration Boolean @default(false)
+  calibrationFrequencyDays Int? @db.Integer
+  
+  // Regulatory
+  fdaNumber   String?  @db.VarChar(100)
+  fdaCleared  Boolean  @default(false)
+  
+  // Billable flag
+  isBillable  Boolean  @default(true) // Can this item generate billing charges
+  
+  active      Boolean  @default(true)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  updatedBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  category    InventoryCategory @relation(fields: [categoryId], references: [id])
+  vendor      Vendor?          @relation(fields: [vendorId], references: [id])
+  batches     InventoryBatch[]
+  transactions InventoryTransaction[]
+  usages      InventoryUsage[]
+  stock       InventoryStock[]
+  prescriptions Prescription[]
+  procedureInventoryRequirements ProcedureInventoryRequirement[]
+  
+  @@index([itemNumber])
+  @@index([categoryId])
+  @@index([vendorId])
+  @@index([itemType])
+  @@index([isEquipment])
+  @@index([isBillable])
+  @@index([active])
+  @@map("inventory_items")
+}
+
+model Vendor {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50)
+  name        String   @db.VarChar(200)
+  taxId       String?  @db.VarChar(50)
+  accountNumber String? @db.VarChar(100)
+  
+  // Contact
+  primaryContact String? @db.VarChar(200)
+  email       String?  @db.VarChar(255)
+  phone       String?  @db.VarChar(50)
+  address     String?  @db.VarChar(500)
+  city        String?  @db.VarChar(100)
+  state       String?  @db.VarChar(50)
+  zipCode     String?  @db.VarChar(20)
+  country     String?  @db.VarChar(100)
+  
+  paymentTerms String? @db.VarChar(100)
+  active      Boolean  @default(true)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  items       InventoryItem[]
+  
+  @@index([code])
+  @@index([active])
+  @@map("vendors")
+}
+
+// Batch/lot tracking with expiry
+model InventoryBatch {
+  id          String   @id @default(uuid()) @db.Uuid
+  itemId      String   @db.Uuid
+  
+  // Batch identification
+  batchNumber String   @db.VarChar(100) // Lot number or batch ID
+  lotNumber   String?  @db.VarChar(100) // Alternative lot identifier
+  
+  // Expiry tracking
+  manufactureDate DateTime? @db.Date
+  expirationDate  DateTime? @db.Date
+  
+  // Receipt information
+  receivedDate DateTime @default(now()) @db.Date
+  receivedQuantity Decimal @db.Decimal(10, 3)
+  unitCost    Decimal? @db.Decimal(10, 2) // Cost at receipt
+  
+  // Status
+  isExpired   Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  
+  // Vendor information (captured at receipt)
+  vendorId    String?  @db.Uuid
+  purchaseOrderNumber String? @db.VarChar(100)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  item        InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  transactions InventoryTransaction[]
+  stock       InventoryStock[]
+  usages      InventoryUsage[]
+  
+  @@unique([itemId, batchNumber]) // Unique batch per item
+  @@index([itemId])
+  @@index([batchNumber])
+  @@index([lotNumber])
+  @@index([expirationDate])
+  @@index([isExpired])
+  @@map("inventory_batches")
+}
+
+// CRITICAL: Stock is DERIVED from transactions, not directly mutated
+// This view/table represents current state computed from InventoryTransaction
+model InventoryStock {
+  id          String   @id @default(uuid()) @db.Uuid
+  itemId      String   @db.Uuid
+  batchId     String?  @db.Uuid // Optional: if item tracks batches
+  locationId  String?  @db.Uuid // Theater, storage room, etc.
+  
+  // Derived quantities (computed from transactions)
+  quantityOnHand Decimal @default(0) @db.Decimal(10, 3)
+  quantityReserved Decimal @default(0) @db.Decimal(10, 3) // Reserved for cases
+  quantityAvailable Decimal @db.Decimal(10, 3) // onHand - reserved
+  
+  // Last computed timestamp (for cache invalidation)
+  lastComputedAt DateTime @default(now()) @db.Timestamptz(6)
+  
+  // Audit (track when this snapshot was created/updated)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations
+  item        InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  batch       InventoryBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  
+  // CRITICAL: This table is a MATERIALIZED VIEW pattern
+  // Application MUST recompute from InventoryTransaction
+  // Never directly UPDATE this table - only recompute
+  
+  @@unique([itemId, batchId, locationId]) // Unique stock position
+  @@index([itemId])
+  @@index([batchId])
+  @@index([locationId])
+  @@index([lastComputedAt])
+  @@map("inventory_stock")
+}
+
+// IMMUTABLE: Append-only transaction log
+// All stock changes must go through this table
+model InventoryTransaction {
+  id          String   @id @default(uuid()) @db.Uuid
+  transactionNumber String @unique @db.VarChar(50) // Human-readable ID
+  
+  // Item and batch
+  itemId      String   @db.Uuid
+  batchId     String?  @db.Uuid // Optional: for batch-tracked items
+  
+  // Transaction details
+  transactionType InventoryTransactionType
+  quantity    Decimal  @db.Decimal(10, 3)
+  unitCost    Decimal? @db.Decimal(10, 2) // Cost at transaction time
+  
+  // Location
+  fromLocationId String? @db.Uuid
+  toLocationId   String? @db.Uuid
+  
+  // Reference information (what triggered this transaction)
+  referenceType String? @db.VarChar(50) // PURCHASE_ORDER, SURGICAL_CASE, ADJUSTMENT, etc.
+  referenceId   String? @db.Uuid
+  
+  // CRITICAL: Event-driven anchor
+  // Every transaction MUST reference the DomainEvent that created it
+  triggeringEventId String @db.Uuid // References DomainEvent
+  
+  // Clinical traceability
+  caseId      String?  @db.Uuid // If related to surgical case
+  patientId   String?  @db.Uuid // If patient-specific
+  
+  // Batch/lot tracking (captured at transaction time)
+  batchNumber String?  @db.VarChar(100)
+  lotNumber   String?  @db.VarChar(100)
+  serialNumber String? @db.VarChar(100)
+  expirationDate DateTime? @db.Date
+  
+  // Notes
+  notes       String?  @db.Text
+  reason      String?  @db.Text // Why this transaction occurred
+  
+  // Authorization (who authorized this transaction)
+  authorizedBy String? @db.Uuid // User ID (RBAC check)
+  
+  // Audit (immutable)
+  transactionDate DateTime @default(now()) @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1) // Always 1 - immutable
+  
+  // Relations
+  item        InventoryItem @relation(fields: [itemId], references: [id])
+  batch       InventoryBatch? @relation(fields: [batchId], references: [id])
+  case        SurgicalCase? @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  triggeringEvent DomainEvent @relation("InventoryTransactionEvent", fields: [triggeringEventId], references: [id])
+  prescriptionDispensations PrescriptionDispensation[] @relation("PrescriptionDispensationTransaction")
+  usages      InventoryUsage[]
+  
+  // INVARIANT: This record is IMMUTABLE after creation
+  // Never UPDATE or DELETE - only INSERT
+  
+  @@index([transactionNumber])
+  @@index([itemId])
+  @@index([batchId])
+  @@index([transactionType])
+  @@index([transactionDate])
+  @@index([triggeringEventId]) // Critical for event traceability
+  @@index([referenceType, referenceId])
+  @@index([caseId])
+  @@index([patientId])
+  @@map("inventory_transactions")
+}
+
+// Links inventory consumption to clinical events
+// Enables recall tracking and clinical audit
+model InventoryUsage {
+  id          String   @id @default(uuid()) @db.Uuid
+  
+  // Inventory reference
+  itemId      String   @db.Uuid
+  batchId     String?  @db.Uuid
+  transactionId String @db.Uuid // The consumption transaction
+  
+  // Clinical context
+  caseId      String?  @db.Uuid // Optional: Links to surgical case
+  consultationId String? @db.Uuid // Optional: Links to consultation (for prescriptions, lab, etc.)
+  patientId   String   @db.Uuid // Patient who received item
+  
+  // Quantity used
+  quantityUsed Decimal @db.Decimal(10, 3)
+  unitCost    Decimal? @db.Decimal(10, 2) // Cost at time of use
+  
+  // Batch details (snapshot at time of use)
+  batchNumber String?  @db.VarChar(100)
+  lotNumber   String?  @db.VarChar(100)
+  serialNumber String? @db.VarChar(100)
+  expirationDate DateTime? @db.Date
+  
+  // CRITICAL: Event anchoring
+  // This usage was triggered by a clinical event
+  clinicalEventId String @db.Uuid // DomainEvent that triggered usage
+  billingEventId  String? @db.Uuid // DomainEvent that created billing (if billable)
+  
+  // Location where used
+  theaterId   String?  @db.Uuid
+  locationId  String?  @db.Uuid
+  
+  // Notes
+  notes       String?  @db.Text
+  
+  // Audit
+  usedAt      DateTime @default(now()) @db.Timestamptz(6)
+  usedBy      String?  @db.Uuid // User who recorded usage
+  version     Int      @default(1)
+  
+  // Relations
+  item        InventoryItem @relation(fields: [itemId], references: [id])
+  batch       InventoryBatch? @relation(fields: [batchId], references: [id])
+  patient     Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  case        SurgicalCase? @relation(fields: [caseId], references: [id])
+  consultation Consultation? @relation(fields: [consultationId], references: [id])
+  transaction InventoryTransaction @relation(fields: [transactionId], references: [id])
+  clinicalEvent DomainEvent @relation("InventoryUsageClinicalEvent", fields: [clinicalEventId], references: [id])
+  billingEvent DomainEvent? @relation("InventoryUsageBillingEvent", fields: [billingEventId], references: [id])
+  billLineItems BillLineItem[] @relation("BillLineItemUsage")
+  prescriptionDispensations PrescriptionDispensation[] @relation("PrescriptionDispensationUsage")
+  
+  // INVARIANT: Immutable after creation
+  // Supports recall tracking: find all usages of a batch
+  
+  @@index([itemId])
+  @@index([batchId])
+  @@index([caseId])
+  @@index([consultationId])
+  @@index([patientId])
+  @@index([transactionId])
+  @@index([clinicalEventId])
+  @@index([billingEventId])
+  @@index([theaterId])
+  @@index([batchNumber]) // For recall queries
+  @@index([lotNumber])   // For recall queries
+  @@map("inventory_usages")
+}

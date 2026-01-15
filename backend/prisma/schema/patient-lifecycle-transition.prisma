@@ -1,0 +1,39 @@
+// Patient Lifecycle Transition History
+// Dedicated audit table for lifecycle transitions (clinical defensibility)
+// This is the source of truth for patient lifecycle history
+
+model PatientLifecycleTransition {
+  id            String   @id @default(uuid()) @db.Uuid
+  patientId     String   @db.Uuid
+  
+  // State transition
+  fromState     String   @db.VarChar(50) // PatientLifecycleState enum value
+  toState       String   @db.VarChar(50) // PatientLifecycleState enum value
+  
+  // Actor information
+  actorUserId   String   @db.Uuid
+  actorRole     String   @db.VarChar(50) // Role code (e.g., 'ADMIN', 'DOCTOR', 'PATIENT')
+  
+  // Context
+  reason        String?  @db.Text // Required for sensitive transitions
+  context       Json?    // Additional context (consultationId, consentId, etc.)
+  
+  // Request context (for audit)
+  ipAddress     String?  @db.VarChar(100)
+  userAgent     String?  @db.Text
+  correlationId String?  @db.Uuid
+  
+  // Timestamp
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  
+  // Relations
+  patient       Patient  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  actorUser     User     @relation("PatientLifecycleTransitionActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  
+  @@index([patientId])
+  @@index([createdAt])
+  @@index([fromState, toState])
+  @@index([actorUserId])
+  @@index([actorRole])
+  @@map("patient_lifecycle_transitions")
+}

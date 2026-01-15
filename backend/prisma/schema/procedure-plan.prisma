@@ -1,0 +1,126 @@
+// Procedure Plan: Pre-operative procedure planning
+// Links consultations to surgical procedures with detailed planning
+// Extended for aesthetic surgery workflows: supports surgical, non-surgical, series, and conservative plans
+
+// Procedure plan type - distinguishes surgical vs non-surgical vs series treatments
+enum ProcedurePlanType {
+  SURGICAL       // Surgical procedure (requires theatre)
+  NON_SURGICAL   // Non-surgical treatment (injections, laser, etc.)
+  CONSERVATIVE   // Conservative management (no procedure)
+  SERIES         // Multi-session treatment series (e.g., 6 PRP sessions)
+}
+
+// Procedure plan status - lifecycle for treatment plans
+enum ProcedurePlanStatus {
+  DRAFT          // Being created/edited
+  APPROVED       // Approved by doctor/surgeon
+  SCHEDULED      // First appointment scheduled
+  IN_PROGRESS    // Series in progress (for multi-session plans)
+  COMPLETED      // All sessions completed
+  CANCELLED      // Cancelled before completion
+  ON_HOLD        // Temporarily paused
+}
+
+model ProcedurePlan {
+  id          String   @id @default(uuid()) @db.Uuid
+  planNumber  String   @unique @db.VarChar(50) // Human-readable plan ID
+  
+  // Core relationships
+  patientId   String   @db.Uuid
+  consultationId String @db.Uuid
+  surgeonId   String   @db.Uuid // Primary surgeon
+  
+  // Procedure details
+  procedureName String @db.VarChar(500)
+  procedureCode String? @db.VarChar(50) // CPT code
+  procedureDescription String? @db.Text
+  
+  // Planning details
+  plannedDate DateTime? @db.Date
+  estimatedDurationMinutes Int? @db.Integer
+  complexity String? @db.VarChar(50) // SIMPLE, MODERATE, COMPLEX
+  
+  // Plan type - distinguishes surgical vs non-surgical vs series
+  planType ProcedurePlanType @default(SURGICAL) // Type of plan
+  
+  // Multi-session support (for SERIES plans)
+  sessionCount Int? @default(1) // Number of sessions (1 for single, >1 for series)
+  currentSession Int? @default(1) // Current session number (for series)
+  sessionIntervalDays Int? // Days between sessions (for series)
+  sessionDetails String? @db.Text // JSON or structured text for session-specific notes
+  
+  // Follow-up planning
+  followUpRequired Boolean @default(false) // Whether follow-up is required after completion
+  followUpIntervalDays Int? // Days after completion for follow-up
+  followUpConsultationId String? @db.Uuid // Link to follow-up consultation when created
+  
+  // Status - using enum for type safety
+  status      ProcedurePlanStatus @default(DRAFT)
+  approvedAt  DateTime? @db.Timestamptz(6)
+  approvedBy  String?  @db.Uuid
+  
+  // Notes
+  notes       String?  @db.Text
+  preoperativeNotes String? @db.Text
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  updatedBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  surgeon     User     @relation("ProcedurePlanSurgeon", fields: [surgeonId], references: [id])
+  approvedByUser User? @relation("ProcedurePlanApprovedBy", fields: [approvedBy], references: [id])
+  createdByUser User? @relation("ProcedurePlanCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByUser User? @relation("ProcedurePlanUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  consentInstance PatientConsentInstance? // One-to-one: one consent per plan
+  surgicalCases SurgicalCase[] // One-to-many: multiple surgeries possible from one plan (revisions, etc.)
+  inventoryRequirements ProcedureInventoryRequirement[]
+  followUpConsultation Consultation? @relation("ProcedurePlanFollowUp", fields: [followUpConsultationId], references: [id], onDelete: SetNull)
+  invoices             Invoice[]
+  
+  @@index([planNumber])
+  @@index([patientId])
+  @@index([consultationId])
+  @@index([surgeonId])
+  @@index([status])
+  @@index([planType]) // For querying plans by type
+  @@index([plannedDate])
+  @@index([followUpConsultationId]) // For linking follow-up consultations
+  @@map("procedure_plans")
+}
+
+// Inventory requirements for a procedure plan
+model ProcedureInventoryRequirement {
+  id          String   @id @default(uuid()) @db.Uuid
+  planId      String   @db.Uuid
+  inventoryItemId String @db.Uuid
+  
+  // Requirements
+  quantityRequired Decimal @db.Decimal(10, 3)
+  quantityReserved Decimal @default(0) @db.Decimal(10, 3)
+  
+  // Status
+  status      String   @default("PENDING") @db.VarChar(50) // PENDING, RESERVED, ALLOCATED, CANCELLED
+  
+  // Notes
+  notes       String?  @db.Text
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations
+  plan        ProcedurePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  
+  @@index([planId])
+  @@index([inventoryItemId])
+  @@index([status])
+  @@map("procedure_inventory_requirements")
+}

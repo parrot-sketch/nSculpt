@@ -1,0 +1,245 @@
+// RBAC: Role-Based Access Control
+// User management, roles, permissions, and time-bound assignments
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  
+  // Identity
+  email       String   @unique @db.VarChar(255)
+  employeeId  String?  @unique @db.VarChar(100) // Optional employee ID
+  username    String?  @unique @db.VarChar(100) // Optional username
+  
+  // Authentication
+  passwordHash String  @db.VarChar(255) // Bcrypt hash
+  passwordChangedAt DateTime? @db.Timestamptz(6) // Track password changes for security audits
+  passwordResetToken String? @db.VarChar(255)
+  passwordResetExpiresAt DateTime? @db.Timestamptz(6)
+
+  // Account lockout fields (Phase 1 security hardening)
+  failedLoginAttempts Int      @default(0) @map("failed_login_attempts")
+  lastFailedLoginAt   DateTime? @db.Timestamptz(6) @map("last_failed_login_at")
+  lockedUntil         DateTime? @db.Timestamptz(6) @map("locked_until")
+  
+  // Profile
+  firstName   String   @db.VarChar(200)
+  lastName    String   @db.VarChar(200)
+  middleName  String?  @db.VarChar(200)
+  title       String?  @db.VarChar(100) // Dr., Mr., Ms., etc.
+  phone       String?  @db.VarChar(50)
+  
+  // Professional
+  departmentId String? @db.Uuid // Optional department assignment
+  specialization String? @db.VarChar(200) // Medical specialization
+  licenseNumber String? @db.VarChar(100) // Medical license number
+  npiNumber    String? @db.VarChar(20) // National Provider Identifier
+  
+  // Status
+  isActive    Boolean  @default(true) @map("active")
+  isEmailVerified Boolean @default(false) @map("emailVerified")
+  lastLoginAt DateTime? @db.Timestamptz(6)
+  
+  // MFA
+  mfaEnabled  Boolean  @default(false)
+  mfaSecret   String?  @db.VarChar(255) // TOTP secret (encrypted)
+  backupCodes String[] // Backup codes for MFA recovery
+  
+  // Operational Config
+  isTheaterEligible Boolean @default(false)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?   @db.Uuid
+  updatedBy   String?   @db.Uuid
+  version     Int       @default(1)
+  
+  // Relations
+  department  Department? @relation(fields: [departmentId], references: [id])
+  roleAssignments UserRoleAssignment[]
+  sessions    Session[]
+  dataAccessLogs DataAccessLog[]
+  eventsCreated DomainEvent[] @relation("EventCreatedBy")
+  sessionsRevoked Session[] @relation("SessionRevokedBy")
+  
+  // Cross-domain relations (referenced by other models)
+  pdfConsentsCreated PDFConsent[] @relation("PDFConsentCreator")
+  pdfConsentsArchived PDFConsent[] @relation("PDFConsentArchivedBy")
+  pdfConsentSignatures PDFConsentSignature[] @relation("PDFConsentSigner")
+  pdfConsentAnnotations PDFConsentAnnotation[] @relation("PDFConsentAnnotationCreator")
+  
+  // Phase 3 Clinical Core
+  createdEncounters   Encounter[]   @relation("EncounterCreator")
+  updatedEncounters   Encounter[]   @relation("EncounterUpdater")
+  lockedEncounters    Encounter[]   @relation("EncounterLocker")
+  
+  createdObservations Observation[] @relation("ObservationCreator")
+  createdConditions   Condition[]   @relation("ConditionCreator")
+  emrNotesAuthored EMRNote[] @relation("EMRNoteAuthor")
+  labOrdersOrdered LabOrder[] @relation("LabOrderOrderedBy")
+  labOrdersApproved LabOrder[] @relation("LabOrderApprovedBy")
+  labResultsRecorded LabResult[] @relation("LabResultRecordedBy")
+  prescriptionsPrescribed Prescription[] @relation("PrescriptionPrescribedBy")
+  prescriptionsDispensed Prescription[] @relation("PrescriptionDispensedBy")
+  patientsDoctorInCharge Patient[] @relation("PatientDoctorInCharge")
+  patientsCreated Patient[] @relation("PatientCreatedBy")
+  patientsUpdated Patient[] @relation("PatientUpdatedBy")
+  patientsMerged Patient[] @relation("PatientMergedBy")
+  consultationsDoctor Consultation[] @relation("ConsultationDoctor")
+  consultationsCreated Consultation[] @relation("ConsultationCreatedBy")
+  consultationsUpdated Consultation[] @relation("ConsultationUpdatedBy")
+  procedurePlansSurgeon ProcedurePlan[] @relation("ProcedurePlanSurgeon")
+  procedurePlansApproved ProcedurePlan[] @relation("ProcedurePlanApprovedBy")
+  procedurePlansCreated ProcedurePlan[] @relation("ProcedurePlanCreatedBy")
+  procedurePlansUpdated ProcedurePlan[] @relation("ProcedurePlanUpdatedBy")
+  followUpPlansDoctor FollowUpPlan[] @relation("FollowUpPlanDoctor")
+  followUpPlansCreated FollowUpPlan[] @relation("FollowUpPlanCreatedBy")
+  followUpPlansUpdated FollowUpPlan[] @relation("FollowUpPlanUpdatedBy")
+  surgicalCasesPrimarySurgeon SurgicalCase[] @relation("SurgicalCasePrimarySurgeon")
+  surgicalCasesCreated SurgicalCase[] @relation("SurgicalCaseCreatedBy")
+  surgicalCasesUpdated SurgicalCase[] @relation("SurgicalCaseUpdatedBy")
+  roleAssignmentsRevoked UserRoleAssignment[] @relation("UserRoleAssignmentRevokedBy")
+  consentsPresented PatientConsentInstance[] @relation("ConsentPresentedBy")
+  consentsRevoked PatientConsentInstance[] @relation("ConsentRevokedBy")
+  medicationAdministrations MedicationAdministration[] @relation("MedicationAdministeredBy")
+  appointmentsDoctor Appointment[] @relation("AppointmentDoctor")
+  appointmentsCancelled Appointment[] @relation("AppointmentCancelledBy")
+  appointmentsRescheduled Appointment[] @relation("AppointmentRescheduledBy")
+  appointmentsCheckedIn Appointment[] @relation("AppointmentCheckedInBy")
+  patientAccount Patient? @relation("PatientUserAccount") // 1:1 Patient account (if user is a patient)
+  patientsInvited Patient[] @relation("PatientInvitedBy") // Patients this user invited
+  patientsLifecycleChanged Patient[] @relation("PatientLifecycleChangedBy")
+  patientIntakesVerified PatientIntake[] @relation("PatientIntakeVerifiedBy")
+  consultationRequestsSpecialist ConsultationRequest[] @relation("ConsultationRequestSpecialist")
+  consultationRequestsApproved ConsultationRequest[] @relation("ConsultationRequestApprovedBy")
+  consultationRequestsRejected ConsultationRequest[] @relation("ConsultationRequestRejectedBy")
+  patientLifecycleTransitions PatientLifecycleTransition[] @relation("PatientLifecycleTransitionActor")
+  passwordHistory PasswordHistory[] @relation("UserPasswordHistory")
+  notifications   Notification[]
+  doctorProfile DoctorProfile?
+  
+  @@index([email])
+  @@index([employeeId])
+  @@index([username])
+  @@index([departmentId])
+  @@index([isActive])
+  @@index([isEmailVerified])
+  @@index([lastLoginAt])
+  @@index([lockedUntil])
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(100) // e.g., "SURGEON", "NURSE", "ADMIN"
+  name        String   @db.VarChar(200)
+  description String?  @db.Text
+  
+  // Scope
+  domain      Domain?  // Optional: restrict role to specific domain
+  
+  // Status
+  isActive    Boolean  @default(true) @map("active")
+  isSystem    Boolean  @default(false) // System roles cannot be deleted
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  updatedBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  permissions RolePermission[]
+  userAssignments UserRoleAssignment[]
+  
+  @@index([code])
+  @@index([domain])
+  @@index([isActive])
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(200) // e.g., "medical_records:read", "theater:book"
+  name        String   @db.VarChar(200)
+  description String?  @db.Text
+  
+  // Scope
+  domain      Domain   // Required: which domain this permission applies to
+  resource    String?  @db.VarChar(100) // Optional: specific resource type
+  action      String   @db.VarChar(50) // READ, WRITE, DELETE, EXPORT, etc.
+  
+  // Status
+  isActive    Boolean  @default(true)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  rolePermissions RolePermission[]
+  
+  @@index([code])
+  @@index([domain])
+  @@index([resource])
+  @@index([action])
+  @@index([isActive])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id          String   @id @default(uuid()) @db.Uuid
+  roleId      String   @db.Uuid
+  permissionId String @db.Uuid
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  role        Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission  Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  
+  @@unique([roleId, permissionId]) // Prevent duplicate permission assignments
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model UserRoleAssignment {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  roleId      String   @db.Uuid
+  
+  // Time-bound access
+  validFrom   DateTime @default(now()) @db.Timestamptz(6)
+  validUntil  DateTime? @db.Timestamptz(6) // Null = indefinite
+  
+  // Status
+  isActive    Boolean  @default(true) @map("active")
+  revokedAt   DateTime? @db.Timestamptz(6)
+  revokedBy   String?  @db.Uuid
+  // revocationReason String? @db.Text // Column doesn't exist in database yet
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        Role     @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  revokedByUser User?  @relation("UserRoleAssignmentRevokedBy", fields: [revokedBy], references: [id])
+  
+  // INVARIANT: Revoked assignments cannot be reactivated (create new assignment instead)
+  
+  @@index([userId])
+  @@index([roleId])
+  @@index([validFrom, validUntil])
+  @@index([isActive])
+  @@index([revokedAt])
+  @@map("user_role_assignments")
+}

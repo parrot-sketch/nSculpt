@@ -1,0 +1,56 @@
+// Notification: In-app notification system
+// Tracks messages for users (patients, doctors, staff)
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+  APPOINTMENT
+  BILLING
+  CLINICAL
+}
+
+enum NotificationPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Notification {
+  id          String   @id @default(uuid()) @db.Uuid
+  
+  // Recipient (Link to User)
+  recipientId String   @db.Uuid
+  
+  // Content
+  title       String   @db.VarChar(200)
+  message     String   @db.Text
+  
+  // Categorization
+  type        NotificationType     @default(INFO)
+  priority    NotificationPriority @default(MEDIUM)
+  
+  // Status
+  isRead      Boolean  @default(false)
+  readAt      DateTime? @db.Timestamptz(6)
+  
+  // Actionability
+  link        String?  @db.VarChar(255) // URL or route to navigate to
+  metadata    Json?    // Contextual data (appointmentId, patientId, etc.)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations
+  recipient   User     @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  
+  @@index([recipientId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@index([type])
+  @@map("notifications")
+}

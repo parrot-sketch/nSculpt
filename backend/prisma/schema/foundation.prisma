@@ -1,0 +1,91 @@
+// Foundation: Core Types & Enums
+// Shared enumerations used across domains
+
+enum Domain {
+  THEATER
+  MEDICAL_RECORDS
+  CONSENT
+  RBAC
+  AUDIT
+  INVENTORY
+  BILLING
+  CONSULTATION
+  EMR
+  ORDERS
+  PRESCRIPTION
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// Inventory transaction types - append-only operations
+enum InventoryTransactionType {
+  RECEIPT        // Stock received from vendor
+  RESERVATION    // Reserved for upcoming case
+  CONSUMPTION    // Used in case (irreversible)
+  RETURN         // Returned to stock (from reservation or case)
+  WASTAGE        // Lost, expired, damaged
+  ADJUSTMENT     // Inventory count adjustment (ADMIN only)
+  TRANSFER_OUT   // Transferred out of location
+  TRANSFER_IN    // Transferred into location
+  ALLOCATION     // Allocated to theater/case
+  DEALLOCATION   // Released from allocation
+  REVERSAL       // Reversal of previous transaction (not edit - new entry)
+}
+
+// Billing status values
+enum BillStatus {
+  DRAFT
+  PENDING
+  SENT
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+  WRITTEN_OFF
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+  VOIDED
+}
+
+enum BillingAdjustmentType {
+  DISCOUNT
+  WRITE_OFF
+  CORRECTION
+  ADJUSTMENT
+}
+
+// Consultation status values - state machine for consultation lifecycle
+enum ConsultationStatus {
+  SCHEDULED
+  CHECKED_IN
+  IN_TRIAGE
+  IN_CONSULTATION
+  PLAN_CREATED
+  CLOSED
+  FOLLOW_UP
+  REFERRED
+  SURGERY_SCHEDULED
+  CANCELLED
+  NO_SHOW
+}
+
+// Consultation outcome - explicit clinical decision made during consultation
+// CRITICAL: Every finalized consultation must have an outcome
+enum ConsultationOutcome {
+  NO_ACTION          // No further action needed - consult-only
+  FOLLOW_UP         // Follow-up consultation required
+  PROCEDURE_PLANNED  // Procedure/treatment plan created
+  CONSERVATIVE       // Conservative management (no procedure)
+  REFERRED          // Referred to another provider
+}

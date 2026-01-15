@@ -1,0 +1,223 @@
+// Audit & Compliance: HIPAA & Legal Requirements
+// Event sourcing and comprehensive access logging
+
+model DomainEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  
+  // IDENTITY: Immutable event identification
+  eventType   String   @db.VarChar(100) // e.g., "MedicalRecord.Created", "Consent.Signed" (pattern: DomainEntity.Action)
+  domain      Domain   // Required: domain classification
+  aggregateId String   @db.Uuid // Required: ID of the entity that changed
+  aggregateType String @db.VarChar(100) // Required: Entity type: "MedicalRecord", "Consent", etc.
+  
+  // PAYLOAD: Immutable event data
+  payload     Json     @db.JsonB // Required: Structured event data (immutable)
+  metadata    Json?    @db.JsonB // Optional: Additional context (immutable)
+  
+  // CORRELATION & CAUSATION: Required for event chains
+  correlationId String? @db.Uuid // Links events in same workflow (optional but recommended)
+  causationId   String? @db.Uuid // Event that caused this one (optional but recommended)
+  
+  // ACTOR IDENTITY: Who/what created this event
+  createdBy   String?   @db.Uuid // User ID (nullable for system events)
+  sessionId   String?   @db.VarChar(100) // Session identifier for correlation
+  requestId   String?   @db.VarChar(100) // HTTP request ID for tracing
+  
+  // TEMPORAL: Immutable timestamps
+  occurredAt  DateTime  @default(now()) @db.Timestamptz(6) // When event occurred (immutable)
+  
+  // INTEGRITY: Content hash for tamper detection
+  contentHash String   @db.VarChar(64) // SHA-256 hash of event content (immutable)
+  
+  // Relations
+  creator     User?     @relation("EventCreatedBy", fields: [createdBy], references: [id])
+  
+  // Cross-domain event relations (polymorphic - one event can trigger multiple actions)
+  inventoryTransactions InventoryTransaction[] @relation("InventoryTransactionEvent")
+  inventoryUsageClinicalEvents InventoryUsage[] @relation("InventoryUsageClinicalEvent")
+  inventoryUsageBillingEvents InventoryUsage[] @relation("InventoryUsageBillingEvent")
+  billLineItems BillLineItem[] @relation("BillLineItemEvent")
+  billingAdjustments BillingAdjustment[] @relation("BillingAdjustmentEvent")
+  payments Payment[] @relation("PaymentEvent")
+  insuranceClaims InsuranceClaim[] @relation("InsuranceClaimEvent")
+  caseStatusChanges CaseStatusHistory[] @relation("CaseStatusEvent")
+  consentRevocations PatientConsentInstance[] @relation("ConsentRevocationEvent")
+  recordMerges RecordMergeHistory[] @relation("RecordMergeEvent")
+  recordMergeReversals RecordMergeHistory[] @relation("RecordMergeReversalEvent")
+  patientMerges PatientMergeHistory[] @relation("PatientMergeEvent")
+  
+  @@index([eventType])
+  @@index([domain])
+  @@index([aggregateId, aggregateType])
+  @@index([occurredAt])
+  @@index([correlationId])
+  @@index([causationId])
+  @@index([createdBy])
+  @@index([sessionId])
+  @@index([contentHash]) // For integrity verification
+  @@map("domain_events")
+}
+
+model DataAccessLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  resourceType String  @db.VarChar(100) // "MedicalRecord", "ConsentArtifact", "Attachment"
+  resourceId   String  @db.Uuid
+  
+  // Access details
+  action      String   @db.VarChar(50) // READ, WRITE, DELETE, EXPORT, PRINT
+  ipAddress   String?  @db.VarChar(45)
+  userAgent   String?  @db.VarChar(500)
+  sessionId   String?  @db.VarChar(100)
+  
+  // Context
+  reason      String?  @db.Text // Why access was granted (for audit)
+  justification String? @db.Text // Clinical or administrative justification
+  
+  // PHI access flag
+  accessedPHI Boolean  @default(false) // Critical for HIPAA reporting
+  
+  // Result
+  success     Boolean  @default(true)
+  errorMessage String? @db.Text
+  
+  // Audit
+  accessedAt  DateTime  @default(now()) @db.Timestamptz(6)
+  
+  // Relations
+  user        User     @relation(fields: [userId], references: [id])
+  
+  // Note: Polymorphic resource reference via resourceType + resourceId
+  // Application layer resolves actual resource (MedicalRecord, ConsentArtifact, etc.)
+  
+  @@index([userId])
+  @@index([resourceType, resourceId])
+  @@index([accessedAt])
+  @@index([accessedPHI])
+  @@index([action])
+  @@index([success])
+  @@map("data_access_logs")
+}
+
+model Session {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @db.Uuid
+  tokenHash     String   @db.VarChar(255) // SHA-256 hash of JWT token (for revocation)
+  refreshTokenHash String @db.VarChar(255) // SHA-256 hash of refresh token
+  deviceInfo    String?  @db.VarChar(500) // Device/browser info
+  ipAddress     String?  @db.VarChar(45)
+  userAgent     String?  @db.VarChar(500)
+  
+  // Session lifecycle
+  startedAt     DateTime @default(now()) @db.Timestamptz(6)
+  lastActivityAt DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt     DateTime @db.Timestamptz(6)
+  revokedAt     DateTime? @db.Timestamptz(6)
+  revokedBy     String?  @db.Uuid // User who revoked (self or admin)
+  revokedReason String?  @db.VarChar(200)
+  
+  // Security
+  mfaVerified   Boolean  @default(false) // MFA verification status
+  mfaMethod     String?  @db.VarChar(50) // "TOTP", "SMS", etc.
+  
+  // Audit
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+  version       Int      @default(1)
+  
+  // Relations
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  revokedByUser User?    @relation("SessionRevokedBy", fields: [revokedBy], references: [id])
+  
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([refreshTokenHash])
+  @@index([expiresAt])
+  @@index([revokedAt])
+  @@index([startedAt])
+  @@map("sessions")
+}
+
+// Case Status History - Immutable status change tracking for surgical cases
+// Every status change must be event-anchored for audit compliance
+model CaseStatusHistory {
+  id          String   @id @default(uuid()) @db.Uuid
+  caseId      String   @db.Uuid
+  
+  // Status change
+  fromStatus  String?  @db.VarChar(50) // Previous status (null for initial state)
+  toStatus    String   @db.VarChar(50) // New status
+  changedAt   DateTime @default(now()) @db.Timestamptz(6)
+  
+  // CRITICAL: Event anchoring
+  // Every status change must be triggered by a DomainEvent
+  triggeringEventId String @db.Uuid // DomainEvent that authorized status change
+  
+  // Context
+  reason      String?  @db.Text // Why status changed
+  changedBy   String?  @db.Uuid // User who changed status
+  notes       String?  @db.Text
+  
+  // Audit (immutable)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  version     Int      @default(1) // Always 1 - immutable
+  
+  // Relations
+  case        SurgicalCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  triggeringEvent DomainEvent @relation("CaseStatusEvent", fields: [triggeringEventId], references: [id])
+  
+  // INVARIANT: This record is IMMUTABLE after creation
+  // Never UPDATE or DELETE - only INSERT
+  
+  @@index([caseId])
+  @@index([toStatus])
+  @@index([changedAt])
+  @@index([triggeringEventId])
+  @@map("case_status_history")
+}
+
+// Patient Merge History - Immutable merge tracking for patient records
+// Patient merges must be event-anchored and reversible for legal discovery
+model PatientMergeHistory {
+  id          String   @id @default(uuid()) @db.Uuid
+  
+  // Merge details
+  sourcePatientId String @db.Uuid // Patient being merged FROM
+  targetPatientId String @db.Uuid // Patient being merged INTO (primary)
+  
+  // CRITICAL: Event anchoring
+  // Every merge operation must be triggered by a DomainEvent
+  triggeringEventId String @db.Uuid // DomainEvent that authorized merge
+  
+  // Merge context
+  reason      String?  @db.Text // Why patients were merged
+  mergedBy    String?  @db.Uuid // User who performed merge
+  
+  // Reversal tracking (if merge was undone)
+  reversedAt  DateTime? @db.Timestamptz(6)
+  reversalEventId String? @db.Uuid // DomainEvent that reversed merge
+  reversedBy  String?  @db.Uuid
+  
+  // Audit (immutable)
+  mergedAt    DateTime @default(now()) @db.Timestamptz(6)
+  version     Int      @default(1) // Always 1 - immutable
+  
+  // Relations
+  sourcePatient Patient @relation("SourcePatient", fields: [sourcePatientId], references: [id], onDelete: Restrict)
+  targetPatient Patient @relation("TargetPatient", fields: [targetPatientId], references: [id], onDelete: Restrict)
+  triggeringEvent DomainEvent @relation("PatientMergeEvent", fields: [triggeringEventId], references: [id])
+  
+  // INVARIANT: This record is IMMUTABLE after creation
+  // Never UPDATE or DELETE - only INSERT
+  // To reverse: create new PatientMergeHistory with reversed source/target
+  // Or: update reversal fields via new DomainEvent
+  
+  @@index([sourcePatientId])
+  @@index([targetPatientId])
+  @@index([triggeringEventId])
+  @@index([reversalEventId])
+  @@index([mergedAt])
+  @@index([reversedAt])
+  @@map("patient_merge_history")
+}
+

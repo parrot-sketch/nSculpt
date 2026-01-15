@@ -1,0 +1,55 @@
+// Patient Intake: Medical history intake forms
+// Supports patient intake workflow for lifecycle validation
+
+enum PatientIntakeStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+  VERIFIED
+}
+
+model PatientIntake {
+  id          String   @id @default(uuid()) @db.Uuid
+  patientId   String   @db.Uuid
+  
+  // Status
+  status      PatientIntakeStatus @default(DRAFT)
+  
+  // Clinical Data (structured for clinical workflow)
+  medicalHistory Json?  // Structured medical history (conditions, surgeries, etc.)
+  allergies      Json?  // Array of allergies with severity
+  medications    Json?  // Current medications with dosages
+  chronicConditions Json? // Chronic medical conditions
+  
+  // Notes and attestation
+  notes           String? @db.Text // General notes from patient
+  patientAttestation String? @db.Text // Patient signature/attestation text
+  
+  // Verification (staff review)
+  reason           String? @db.Text // Reason for verification (clinical requirement)
+  verificationNotes String? @db.Text // Notes from staff verification
+  approved         Boolean @default(true) // False if issues found during verification
+  
+  // Timestamps
+  startedAt    DateTime @default(now()) @db.Timestamptz(6) // When intake was started
+  completedAt  DateTime? @db.Timestamptz(6) // When patient submitted
+  verifiedAt   DateTime? @db.Timestamptz(6) // When staff verified
+  verifiedBy   String?  @db.Uuid // Nurse or Admin who verified
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  verifiedByUser User? @relation("PatientIntakeVerifiedBy", fields: [verifiedBy], references: [id], onDelete: SetNull)
+  
+  @@index([patientId])
+  @@index([status])
+  @@index([completedAt])
+  @@index([verifiedAt])
+  @@index([startedAt])
+  @@map("patient_intakes")
+}

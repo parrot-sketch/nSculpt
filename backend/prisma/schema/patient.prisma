@@ -1,0 +1,322 @@
+// Patient: Core patient demographics and medical information
+// HIPAA-compliant patient data management
+
+// Patient Status Enum (matches database enum)
+enum PatientStatus {
+  ACTIVE
+  INACTIVE
+  DECEASED
+  ARCHIVED
+}
+
+// Patient Lifecycle State Enum
+// Authoritative state machine for patient progression through clinical workflow
+enum PatientLifecycleState {
+  REGISTERED
+  EXPLORING
+  VERIFIED
+  INTAKE_IN_PROGRESS
+  INTAKE_COMPLETED
+  INTAKE_VERIFIED
+  CONSULTATION_REQUESTED
+  CONSULTATION_APPROVED
+  APPOINTMENT_SCHEDULED
+  CONSULTATION_COMPLETED
+  PROCEDURE_PLANNED
+  CONSENT_SIGNED
+  SURGERY_SCHEDULED
+  SURGERY_COMPLETED
+  FOLLOW_UP
+  DISCHARGED
+}
+
+// ===================================
+// Domain: Patient Journey Tracking
+// ===================================
+
+enum JourneyStage {
+  DISCOVERY
+  ENGAGEMENT
+  LEAD
+  REGISTERED
+  APPOINTMENT_REQUESTED
+  APPOINTMENT_BOOKED
+  APPOINTMENT_SCHEDULED
+  APPOINTMENT_CONFIRMED
+  CHECKED_IN
+  CONSULTED
+  TREATMENT_PLAN
+  COMPLETED
+  PROCEDURE_SCHEDULED
+  PROCEDURE_DONE
+  FOLLOW_UP
+  MAINTENANCE
+  CLOSED
+}
+
+model Patient {
+  id          String   @id @default(uuid()) @db.Uuid
+  patientNumber String @unique @db.VarChar(50) @map("mrn") // MRN or patient ID
+  
+  // Demographics
+  firstName   String   @db.VarChar(100) // Database has VarChar(100), not 200
+  lastName    String   @db.VarChar(100) // Database has VarChar(100), not 200
+  middleName  String?  @db.VarChar(100) // Database has VarChar(100), not 200
+  // title       String?  @db.VarChar(100) // Mr., Mrs., Dr., etc. - Column doesn't exist in database yet
+  
+  // Identity
+  dateOfBirth DateTime @db.Date
+  gender      String?  @db.VarChar(20) // MALE, FEMALE, OTHER, PREFER_NOT_TO_SAY
+  bloodType   String?  @db.VarChar(10) // A+, B-, O+, etc.
+  
+  // Contact
+  email       String?  @db.VarChar(255)
+  phone       String?  @db.VarChar(50)
+  whatsapp    String?  @db.VarChar(50)
+  alternatePhone String? @db.VarChar(50) @map("phoneSecondary")
+  
+  // Address
+  address     String?  @db.VarChar(200) @map("addressLine1") // Database has VarChar(200), not 500
+  // addressLine2 field exists in DB but not mapped yet
+  city        String?  @db.VarChar(100)
+  state       String?  @db.VarChar(50)
+  zipCode     String?  @db.VarChar(20)
+  country     String?  @db.VarChar(100) @default("Kenya")
+  
+  // Additional info
+  occupation  String?  @db.VarChar(200)
+  // maritalStatus and nationality don't exist in database - removed
+  
+  // File number (required unique identifier in database)
+  fileNumber  String   @unique @db.VarChar(50)
+  
+  // Emergency Contact / Next of Kin
+  // These fields don't exist in database - commented out
+  // nextOfKinFirstName String? @db.VarChar(200)
+  // nextOfKinLastName  String? @db.VarChar(200)
+  // nextOfKinName      String? @db.VarChar(400) // Full name (legacy support)
+  // nextOfKinRelationship String? @db.VarChar(100)
+  // nextOfKinContact   String? @db.VarChar(50)
+  // 
+  // // Legacy emergency contact fields
+  // emergencyContactName String? @db.VarChar(400)
+  // emergencyContactPhone String? @db.VarChar(50)
+  
+  // Medical
+  doctorInChargeId String? @db.Uuid // Assigned doctor
+  // allergies and chronicConditions columns don't exist in database yet - commented out
+  // allergies    String?  @db.Text // Comma-separated or JSON
+  // chronicConditions String? @db.Text // Comma-separated or JSON
+  
+  // User Account Linkage (CRITICAL: Primary identity link for self-service)
+  // A patient can have at most one user account
+  // This replaces the fragile email-based linkage
+  userId      String?  @unique @db.Uuid // FK to User - unique ensures 1:1 relationship
+  
+  // Patient Invitation (for admin-created patients)
+  invitationToken String? @unique @db.VarChar(255) // Secure token for account activation
+  invitationExpiresAt DateTime? @db.Timestamptz(6) // Token expiry
+  invitedAt   DateTime? @db.Timestamptz(6) // When invitation was sent
+  invitedBy   String?  @db.Uuid // Who sent the invitation
+  
+  // Status
+  status      PatientStatus @default(ACTIVE) // Database uses PatientStatus enum, not VarChar
+  restricted  Boolean  @default(false) // Patient access restriction flag
+  restrictedReason String? @db.Text
+  restrictedBy String? @db.Uuid
+  restrictedAt DateTime? @db.Timestamptz(6)
+  mergedInto  String?  @db.Uuid // If merged, reference to primary patient
+  mergedAt    DateTime? @db.Timestamptz(6) // When patient was merged
+  mergedBy    String?  @db.Uuid // Who merged the patient
+  
+  // Lifecycle State (CRITICAL: Managed ONLY by PatientLifecycleService)
+  lifecycleState PatientLifecycleState @default(REGISTERED)
+  lifecycleStateChangedAt DateTime? @db.Timestamptz(6) // When lifecycle state last changed
+  lifecycleStateChangedBy String? @db.Uuid // Who changed lifecycle state (FK to User)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  updatedBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  userAccount User? @relation("PatientUserAccount", fields: [userId], references: [id], onDelete: SetNull) // 1:1 User account
+  invitedByUser User? @relation("PatientInvitedBy", fields: [invitedBy], references: [id], onDelete: SetNull)
+  doctorInCharge User? @relation("PatientDoctorInCharge", fields: [doctorInChargeId], references: [id])
+  createdByUser User? @relation("PatientCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByUser User? @relation("PatientUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  mergedByUser User? @relation("PatientMergedBy", fields: [mergedBy], references: [id], onDelete: SetNull)
+  mergedIntoPatient Patient? @relation("PatientMergeTarget", fields: [mergedInto], references: [id], onDelete: Restrict)
+  patientsMergedIntoThis Patient[] @relation("PatientMergeTarget") // Back-relation for self-referential FK
+  lifecycleStateChangedByUser User? @relation("PatientLifecycleChangedBy", fields: [lifecycleStateChangedBy], references: [id], onDelete: SetNull)
+  medicalRecords MedicalRecord[]
+  consultations Consultation[]
+  consentInstances PatientConsentInstance[]
+  pdfConsents PDFConsent[] @relation("PDFConsentPatient")
+  prescriptions Prescription[]
+  labOrders LabOrder[]
+  emrNotes EMRNote[]
+  insurancePolicies InsurancePolicy[]
+  bills Bill[]
+  payments Payment[]
+  inventoryUsages InventoryUsage[]
+  surgicalCases SurgicalCase[]
+  procedurePlans ProcedurePlan[]
+  followUpPlans FollowUpPlan[]
+  medicationAdministrations MedicationAdministration[]
+  appointments Appointment[]
+  mergeHistory PatientMergeHistory[] @relation("SourcePatient")
+  mergedPatients PatientMergeHistory[] @relation("TargetPatient")
+  contacts PatientContact[] // Next of kin and emergency contacts
+  allergies PatientAllergy[] // Drug allergies
+  intakes PatientIntake[] // Patient intake forms
+  consultationRequests        ConsultationRequest[] // Consultation requests
+  lifecycleTransitions        PatientLifecycleTransition[] // Lifecycle transition history
+  
+  // FrontDesk Redesign Relations
+  journey  PatientJourney?
+  visits   ClinicVisit[]
+  invoices Invoice[]
+  
+  // Phase 3 Clinical Core
+  encounters Encounter[]
+  observations Observation[]
+  diagnoses Condition[]
+  
+  @@index([patientNumber])
+  @@index([fileNumber]) // For file number lookups
+  @@index([firstName, lastName]) // For name searches
+  @@index([email]) // For email searches
+  @@index([phone]) // For phone searches
+  @@index([whatsapp]) // For WhatsApp searches
+  @@index([dateOfBirth]) // For age calculations and DOB searches
+  @@index([status])
+  @@index([doctorInChargeId])
+  @@index([mergedInto])
+  @@index([city]) // For residence searches
+  @@index([occupation]) // For occupation searches
+  @@index([lifecycleState]) // Critical: Fast queries by lifecycle state
+  @@index([lifecycleStateChangedAt]) // For lifecycle history queries
+  @@index([invitationToken]) // For invitation lookup
+  @@index([invitedBy]) // For invitation audit
+  // Composite index for common search patterns
+  @@index([firstName, lastName, dateOfBirth]) // For duplicate checking
+  @@index([fileNumber, status]) // For active patient lookups by file number
+  @@map("patients")
+}
+
+// Patient Contacts: Next of Kin and Emergency Contacts
+// Stored in separate table to support multiple contacts per patient
+model PatientContact {
+  id          String   @id @default(uuid()) @db.Uuid
+  patientId   String   @db.Uuid
+  
+  // Contact Information
+  firstName   String   @db.VarChar(100)
+  lastName    String   @db.VarChar(100)
+  relationship String  @db.VarChar(50) // e.g., "SPOUSE", "PARENT", "CHILD", "SIBLING", "FRIEND"
+  phone       String?  @db.VarChar(50)
+  email       String?  @db.VarChar(255)
+  address     String?  @db.VarChar(500)
+  
+  // Contact Type Flags
+  isNextOfKin Boolean  @default(false)
+  isEmergencyContact Boolean @default(false)
+  
+  // Additional Info
+  priority    Int?     // Priority order (1 = primary, 2 = secondary, etc.)
+  notes       String?  @db.Text
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  
+  @@index([patientId])
+  @@index([isEmergencyContact])
+  @@index([isNextOfKin])
+  @@map("patient_contacts")
+}
+
+// Patient Allergies: Drug allergies and reactions
+// Stored in separate table to support multiple allergies per patient
+model PatientAllergy {
+  id          String   @id @default(uuid()) @db.Uuid
+  patientId   String   @db.Uuid
+  
+  // Allergy Information
+  allergen    String   @db.VarChar(200) // Name of the allergen (drug name)
+  allergyType String   @db.VarChar(50) // Type of allergy (DRUG, FOOD, ENVIRONMENTAL, etc.)
+  severity    String   @db.VarChar(50) // MILD, MODERATE, SEVERE, LIFE_THREATENING
+  reaction    String?  @db.Text // Description of reaction
+  diagnosedAt DateTime? @db.Date // When allergy was diagnosed
+  diagnosedBy String?  @db.Uuid // Clinician who diagnosed
+  
+  // Status
+  active      Boolean  @default(true) // Whether allergy is still active
+  
+  // Additional Info
+  notes       String?  @db.Text
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  
+  @@index([patientId])
+  @@index([active])
+  @@index([allergyType])
+  @@map("patient_allergies")
+}
+
+model PatientJourney {
+  id              String       @id @default(uuid()) @db.Uuid
+  patientId       String       @unique @db.Uuid
+  currentStage    JourneyStage @default(REGISTERED)
+  pipelinePosition Int         @default(0) // For kanban board ordering
+  
+  // High-level progression flags
+  isLead          Boolean      @default(false)
+  hasConsulted    Boolean      @default(false)
+  hasProcPlanned  Boolean      @default(false)
+  
+  // Timing
+  stageStartedAt  DateTime     @default(now()) @db.Timestamptz(6)
+  lastMovementAt  DateTime     @updatedAt @db.Timestamptz(6)
+  lastUpdatedBy   String?      @db.Uuid
+  
+  // Relations
+  patient         Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  history         PatientJourneyHistory[]
+
+  @@index([currentStage])
+  @@index([patientId])
+}
+
+model PatientJourneyHistory {
+  id              String       @id @default(uuid()) @db.Uuid
+  journeyId       String       @db.Uuid
+  fromStage       JourneyStage?
+  toStage         JourneyStage
+  changedAt       DateTime     @default(now()) @db.Timestamptz(6)
+  changedBy       String       @db.Uuid
+  reason          String?      @db.Text
+  sourceType      String?      @db.VarChar(50)
+  sourceId        String?      @db.Uuid
+  
+  // Relations
+  journey         PatientJourney @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  @@index([journeyId])
+  @@index([changedAt])
+}

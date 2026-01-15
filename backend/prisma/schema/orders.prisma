@@ -1,0 +1,90 @@
+// Lab Orders: Clinical order management with workflow state machine
+// Connects Consultation → Orders → Results → EMR → Billing
+
+enum OrderType {
+  LAB
+}
+
+enum OrderStatus {
+  CREATED
+  APPROVED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum ResultStatus {
+  PENDING
+  AVAILABLE
+  AMENDED
+}
+
+model LabOrder {
+  id              String   @id @default(uuid()) @db.Uuid
+  patientId       String   @db.Uuid
+  consultationId  String   @db.Uuid
+  orderedById     String   @db.Uuid
+  approvedById    String?  @db.Uuid
+  
+  orderType       OrderType @default(LAB)
+  testName        String   @db.VarChar(500)
+  priority        String   @db.VarChar(20) // ROUTINE | URGENT
+  status          OrderStatus @default(CREATED)
+  
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+  createdBy       String   @db.Uuid
+  updatedBy       String?  @db.Uuid
+  
+  archived        Boolean  @default(false)
+  archivedAt      DateTime? @db.Timestamptz(6)
+  archivedBy      String?  @db.Uuid
+  
+  version         Int      @default(1)
+  
+  // Relations
+  patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  consultation    Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  orderedBy       User     @relation("LabOrderOrderedBy", fields: [orderedById], references: [id])
+  approvedBy      User?    @relation("LabOrderApprovedBy", fields: [approvedById], references: [id])
+  results         LabResult[]
+  
+  @@index([consultationId])
+  @@index([patientId])
+  @@index([status])
+  @@index([orderedById])
+  @@index([approvedById])
+  @@index([archived])
+  @@index([createdAt])
+  @@index([archivedAt])
+  @@map("lab_orders")
+}
+
+model LabResult {
+  id              String   @id @default(uuid()) @db.Uuid
+  labOrderId      String   @db.Uuid
+  recordedById    String?  @db.Uuid
+  
+  resultStatus    ResultStatus @default(PENDING)
+  resultText      String?  @db.Text
+  fileUrl         String?  @db.VarChar(1000) // PDF or image report
+  
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+  
+  version         Int      @default(1)
+  
+  // Relations
+  labOrder        LabOrder @relation(fields: [labOrderId], references: [id], onDelete: Restrict)
+  recordedBy      User?    @relation("LabResultRecordedBy", fields: [recordedById], references: [id])
+  
+  @@index([labOrderId])
+  @@index([recordedById])
+  @@index([resultStatus])
+  @@index([createdAt])
+  @@map("lab_results")
+}
+
+
+
+

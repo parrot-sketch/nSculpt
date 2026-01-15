@@ -1,0 +1,1 @@
+error TS5033: Could not write file '/home/bkg/ns/backend/dist/tsconfig.tsbuildinfo': EACCES: permission denied, open '/home/bkg/ns/backend/dist/tsconfig.tsbuildinfo'.

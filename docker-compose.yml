@@ -1,0 +1,195 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: ehr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ehr_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ehr_password}
+      POSTGRES_DB: ${POSTGRES_DB:-surgical_ehr}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/database/migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ehr-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ehr_user} -d ${POSTGRES_DB:-surgical_ehr}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c pg_stat_statements.track=all
+      -c max_connections=200
+      -c shared_buffers=256MB
+
+  # Redis for BullMQ and caching
+  redis:
+    image: redis:7-alpine
+    container_name: ehr-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ehr-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_password}
+
+  # pgAdmin for database management (optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ehr-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@ehr.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - ehr-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - tools
+
+  # NestJS Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ${DOCKERFILE:-Dockerfile.dev}
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
+    container_name: ehr-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3001
+      # DATABASE_URL with URL-encoded password (password contains * which must be %2A)
+      # Database name should NOT be URL-encoded
+      # Use environment variables to construct DATABASE_URL dynamically
+      POSTGRES_USER: ${POSTGRES_USER:-ehr_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1xetra*onmi}
+      POSTGRES_DB: ${POSTGRES_DB:-surgical_ehr}
+      # DATABASE_URL will be constructed by docker-entrypoint.sh with proper URL encoding
+      # This is a fallback - entrypoint script will override it with correct encoding
+      DATABASE_URL: postgresql://ehr_user:1xetra%2Aonmi@postgres:5432/surgical_ehr?schema=public
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_password}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      HOST_UID: ${HOST_UID:-1000}
+      HOST_GID: ${HOST_GID:-1000}
+    ports:
+      - "3002:3001"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - /app/dist
+      - ./backend/uploads:/app/uploads
+      - backend_logs:/app/logs
+    networks:
+      - ehr-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Use /health/ready endpoint which validates database connection
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3001/api/v1/health/ready', (r) => {let data='';r.on('data',d=>data+=d);r.on('end',()=>{const res=JSON.parse(data);process.exit(res.status==='ready'?0:1)});}).on('error',()=>process.exit(1))\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Nginx Reverse Proxy (for production)
+  nginx:
+    image: nginx:alpine
+    container_name: ehr-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    networks:
+      - ehr-network
+    depends_on:
+      - backend
+      - frontend
+    profiles:
+      - production
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./client
+      dockerfile: ${FRONTEND_DOCKERFILE:-Dockerfile.dev}
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
+    container_name: ehr-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      # API URL for server-side requests (use backend service name in Docker network)
+      NEXT_PUBLIC_API_URL: http://backend:3001/api/v1
+      # For browser requests, use localhost (browser makes requests from host, not container)
+      NEXT_PUBLIC_API_URL_BROWSER: http://localhost:3002/api/v1
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+    networks:
+      - ehr-network
+    depends_on:
+      backend:
+        condition: service_started  # Changed from service_healthy to allow startup even if health check fails
+    profiles:
+      - frontend
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+  backend_logs:
+    driver: local
+  nginx_logs:
+    driver: local
+
+networks:
+  ehr-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+

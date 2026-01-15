@@ -1,0 +1,52 @@
+// Observation: Measurements and simple assertions
+// Modeled after FHIR Observation
+model Observation {
+  id          String   @id @default(uuid()) @db.Uuid
+  patientId   String   @db.Uuid
+  encounterId String?  @db.Uuid
+  
+  status      ObservationStatus @default(FINAL)
+  category    String   // VITAL-SIGNS, LABORATORY, EXAM
+  
+  // What was observed?
+  code        String   // LOINC code usually (e.g. 8867-4 for Heart Rate)
+  display     String   // Human readable ("Heart Rate")
+  
+  // The value
+  valueQuantity Float?   // Numeric value
+  valueUnit     String?  // Unit (bpm, mmHg)
+  valueString   String?  // Text result
+  
+  // Context
+  effectiveDateTime DateTime @default(now()) @db.Timestamptz(6) // When was it taken?
+  performerId   String?  @db.Uuid // Who took it?
+  
+  // VERSIONING (Copy-on-Write)
+  isLatest          Boolean   @default(true)
+  version           Int       @default(1)
+  previousVersionId String?   @unique @db.Uuid // Linked list for history
+  rootVersionId     String?   @db.Uuid // Optimization for grouping all versions
+  
+  // AUDIT
+  createdById String    @db.Uuid
+  updatedById String?   @db.Uuid
+  enteredInErrorById String? @db.Uuid
+  
+  // Relations
+  patient     Patient @relation(fields: [patientId], references: [id])
+  encounter   Encounter? @relation(fields: [encounterId], references: [id])
+  
+  previousVersion   Observation?  @relation("ObservationHistory", fields: [previousVersionId], references: [id], onDelete: Restrict)
+  nextVersion       Observation?  @relation("ObservationHistory")
+  createdBy         User          @relation("ObservationCreator", fields: [createdById], references: [id])
+  
+  // Audit (Timestamps)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  
+  @@index([patientId])
+  @@index([encounterId, isLatest]) // Fast access to current chart
+  @@index([code])
+  @@index([effectiveDateTime])
+  @@index([rootVersionId])
+  @@map("observations")
+}

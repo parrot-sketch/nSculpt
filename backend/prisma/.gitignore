@@ -1,0 +1,19 @@
+# Prisma generated files
+node_modules/
+.env
+.env.local
+
+# Schema merge output (optional - you may want to commit this)
+# schema.prisma
+
+
+
+
+
+
+
+
+
+
+
+

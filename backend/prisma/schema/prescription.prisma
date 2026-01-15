@@ -1,0 +1,147 @@
+// Prescription: Medication prescriptions with inventory integration
+// Prescribing ≠ Dispensing ≠ Administration
+
+enum PrescriptionStatus {
+  PRESCRIBED      // Doctor wrote prescription
+  DISPENSED       // Pharmacy dispensed (inventory deducted)
+  PARTIALLY_DISPENSED
+  CANCELLED
+  COMPLETED
+}
+
+enum MedicationType {
+  ORAL
+  INJECTION
+  TOPICAL
+  INHALATION
+  IV
+  OTHER
+}
+
+model Prescription {
+  id              String   @id @default(uuid()) @db.Uuid
+  patientId       String   @db.Uuid
+  consultationId  String   @db.Uuid
+  
+  prescribedById  String   @db.Uuid // Doctor who prescribed
+  dispensedById   String?  @db.Uuid // Pharmacist who dispensed
+  
+  // Medication details
+  medicationName  String   @db.VarChar(500)
+  medicationType  MedicationType
+  dosage          String   @db.VarChar(200) // e.g., "500mg"
+  frequency       String   @db.VarChar(100) // e.g., "twice daily", "as needed"
+  quantity        Decimal  @db.Decimal(10, 3) // Quantity prescribed
+  quantityDispensed Decimal @default(0) @db.Decimal(10, 3) // Quantity actually dispensed
+  
+  // Inventory link
+  inventoryItemId String?  @db.Uuid // If medication is tracked in inventory
+  
+  status          PrescriptionStatus @default(PRESCRIBED)
+  
+  // Instructions
+  instructions    String?  @db.Text
+  duration        String?  @db.VarChar(100) // e.g., "7 days", "until finished"
+  
+  // Refills
+  refills         Int      @default(0)
+  refillsRemaining Int     @default(0)
+  
+  // Dates
+  prescribedAt    DateTime @default(now()) @db.Timestamptz(6)
+  dispensedAt     DateTime? @db.Timestamptz(6)
+  expiresAt       DateTime? @db.Timestamptz(6)
+  
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+  version         Int      @default(1)
+  
+  // Relations
+  patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  consultation    Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  prescribedBy    User     @relation("PrescriptionPrescribedBy", fields: [prescribedById], references: [id])
+  dispensedBy     User?    @relation("PrescriptionDispensedBy", fields: [dispensedById], references: [id])
+  inventoryItem   InventoryItem? @relation(fields: [inventoryItemId], references: [id])
+  dispensations   PrescriptionDispensation[]
+  administrations MedicationAdministration[]
+  
+  @@index([inventoryItemId])
+  @@index([patientId])
+  @@index([consultationId])
+  @@index([prescribedById])
+  @@index([dispensedById])
+  @@index([status])
+  @@index([prescribedAt])
+  @@index([dispensedAt])
+  @@index([expiresAt])
+  @@index([createdAt])
+  @@map("prescriptions")
+}
+
+// Dispensation record (when pharmacy dispenses)
+// Links prescription → inventory consumption
+model PrescriptionDispensation {
+  id              String   @id @default(uuid()) @db.Uuid
+  prescriptionId  String   @db.Uuid
+  
+  quantityDispensed Decimal @db.Decimal(10, 3)
+  
+  // Inventory transaction created
+  inventoryTransactionId String? @db.Uuid
+  inventoryUsageId String? @db.Uuid
+  
+  dispensedBy     String   @db.Uuid
+  dispensedAt     DateTime @default(now()) @db.Timestamptz(6)
+  
+  notes           String?  @db.Text
+  
+  // Relations
+  prescription    Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  inventoryTransaction InventoryTransaction? @relation("PrescriptionDispensationTransaction", fields: [inventoryTransactionId], references: [id])
+  inventoryUsage  InventoryUsage? @relation("PrescriptionDispensationUsage", fields: [inventoryUsageId], references: [id])
+  
+  @@index([prescriptionId])
+  @@index([inventoryTransactionId])
+  @@index([inventoryUsageId])
+  @@index([dispensedBy])
+  @@index([dispensedAt])
+  @@map("prescription_dispensations")
+}
+
+// Medication administration (nursing logs)
+// Records when medication was actually given to patient
+model MedicationAdministration {
+  id              String   @id @default(uuid()) @db.Uuid
+  prescriptionId  String   @db.Uuid
+  consultationId  String   @db.Uuid
+  patientId       String   @db.Uuid
+  
+  administeredBy  String   @db.Uuid // Nurse who administered
+  administeredAt  DateTime @default(now()) @db.Timestamptz(6)
+  
+  dosageGiven     String   @db.VarChar(200)
+  route           String   @db.VarChar(50) // ORAL, IV, IM, etc.
+  
+  // Patient response
+  response        String?  @db.Text
+  
+  // Clinical notes
+  notes           String?  @db.Text
+  
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  version         Int      @default(1)
+  
+  // Relations
+  prescription    Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Restrict)
+  consultation    Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  administeredByUser User   @relation("MedicationAdministeredBy", fields: [administeredBy], references: [id])
+  
+  @@index([prescriptionId])
+  @@index([consultationId])
+  @@index([patientId])
+  @@index([administeredBy])
+  @@index([administeredAt])
+  @@map("medication_administrations")
+}
+

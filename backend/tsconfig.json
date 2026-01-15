@@ -1,0 +1,46 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2021",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "incremental": true,
+    "skipLibCheck": true,
+    // TypeScript strictness - enabled incrementally
+    // Phase 1: Safe flags (enabled now)
+    "forceConsistentCasingInFileNames": true, // ✅ Catches import case mismatches
+    "noFallthroughCasesInSwitch": true, // ✅ Prevents missing break statements
+    "strictBindCallApply": true, // ✅ Ensures correct function binding
+    // Phase 2: Medium impact (enable after fixing Phase 1)
+    "strictNullChecks": false, // ⏸️ Enable after null-safety review
+    "noImplicitAny": false, // ⏸️ Enable after explicit typing review
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "types": [
+      "node",
+      "jest"
+    ],
+    "paths": {
+      "@/*": [
+        "src/*"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*",
+    "test/**/*",
+    "scripts/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.old.ts",
+    "test/**/*"
+  ]
+}

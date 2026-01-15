@@ -1,0 +1,53 @@
+// Follow-Up Plan: Structured follow-up care planning
+// Links original consultation to future follow-up appointments
+// Supports multiple follow-ups per consultation (e.g., 1-week, 1-month, 3-month)
+
+enum FollowUpPlanStatus {
+  PENDING     // Created but not yet scheduled
+  SCHEDULED  // Appointment scheduled
+  COMPLETED  // Follow-up consultation completed
+  CANCELLED  // Cancelled before completion
+}
+
+model FollowUpPlan {
+  id String @id @default(uuid()) @db.Uuid
+  
+  // Core relationships
+  consultationId String @db.Uuid // Original consultation that generated this follow-up
+  patientId String @db.Uuid
+  doctorId String @db.Uuid // Doctor who requested the follow-up
+  
+  // Follow-up details
+  followUpType String @db.VarChar(50) // REVIEW, POST_OP, SERIES_SESSION, GENERAL
+  scheduledDate DateTime? @db.Date // When follow-up is scheduled
+  intervalDays Int? // Days from original consultation date
+  reason String? @db.Text // Clinical reason for follow-up
+  
+  // Status workflow
+  status FollowUpPlanStatus @default(PENDING)
+  appointmentId String? @unique @db.Uuid // Link to appointment when scheduled
+  
+  // Audit
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  createdBy String? @db.Uuid
+  updatedBy String? @db.Uuid
+  version Int @default(1)
+  
+  // Relations
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor User @relation("FollowUpPlanDoctor", fields: [doctorId], references: [id])
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  invoices    Invoice[]
+  createdByUser User? @relation("FollowUpPlanCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByUser User? @relation("FollowUpPlanUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  
+  @@index([consultationId]) // For querying follow-ups by consultation
+  @@index([patientId]) // For querying follow-ups by patient
+  @@index([doctorId]) // For querying follow-ups by doctor
+  @@index([status]) // For querying pending/scheduled follow-ups
+  @@index([scheduledDate]) // For querying by date
+  @@index([appointmentId]) // For linking to appointment
+  @@map("follow_up_plans")
+}

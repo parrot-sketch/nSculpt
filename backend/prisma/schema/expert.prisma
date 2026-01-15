@@ -1,0 +1,35 @@
+// Expert: Detailed Professional Profiles
+// Extends the core User model with clinical and marketing-focused bio data
+
+model DoctorProfile {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @unique @db.Uuid
+  
+  // Professional Details
+  specialty    String   @db.VarChar(200)
+  subSpecialty String?  @db.VarChar(200)
+  bio          String   @db.Text
+  qualifications String @db.Text
+  experienceYears Int    @default(0)
+  
+  // Marketing & Public Presence
+  profilePictureUrl String? @db.VarChar(1000)
+  websiteUrl        String? @db.VarChar(1000)
+  socialLinks       Json?   // { facebook: string, instagram: string, twitter: string }
+  
+  // Professional Achievements
+  achievements      String[] // Notable milestones
+  publications      String[] // Research papers
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  services    ClinicalService[] @relation("DoctorServices")
+  
+  @@index([userId])
+  @@map("doctor_profiles")
+}

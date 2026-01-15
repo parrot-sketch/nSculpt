@@ -1,0 +1,455 @@
+// Billing: Event-Driven Revenue Cycle Management
+// All charges derive from clinical/inventory events, never alter clinical truth
+
+model InsuranceProvider {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50)
+  name        String   @db.VarChar(200)
+  payerId     String?  @unique @db.VarChar(50) // National Payer ID
+  taxId       String?  @db.VarChar(50)
+  
+  // Contact
+  address     String?  @db.VarChar(500)
+  city        String?  @db.VarChar(100)
+  state       String?  @db.VarChar(50)
+  zipCode     String?  @db.VarChar(20)
+  phone       String?  @db.VarChar(50)
+  email       String?  @db.VarChar(255)
+  
+  active      Boolean  @default(true)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  policies    InsurancePolicy[]
+  feeSchedules FeeSchedule[]
+  
+  @@index([code])
+  @@index([payerId])
+  @@index([active])
+  @@map("insurance_providers")
+}
+
+model InsurancePolicy {
+  id          String   @id @default(uuid()) @db.Uuid
+  providerId  String   @db.Uuid
+  patientId   String   @db.Uuid
+  
+  // Policy details
+  policyNumber String  @unique @db.VarChar(100)
+  groupNumber  String? @db.VarChar(100)
+  planName     String? @db.VarChar(200)
+  
+  // Coverage dates
+  effectiveDate DateTime @db.Date
+  expirationDate DateTime? @db.Date
+  
+  // Coverage type
+  coverageType String  @db.VarChar(50) // PRIMARY, SECONDARY, TERTIARY
+  planType     String? @db.VarChar(50) // HMO, PPO, POS, EPO
+  
+  // Subscriber information
+  subscriberName String? @db.VarChar(200)
+  subscriberId   String? @db.VarChar(100)
+  subscriberDOB  DateTime? @db.Date
+  subscriberRelationship String? @db.VarChar(50)
+  
+  // Financial details
+  deductible   Decimal? @db.Decimal(10, 2)
+  copay        Decimal? @db.Decimal(10, 2)
+  coinsurance  Decimal? @db.Decimal(5, 4)
+  outOfPocketMax Decimal? @db.Decimal(10, 2)
+  
+  active      Boolean  @default(true)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  provider    InsuranceProvider @relation(fields: [providerId], references: [id])
+  bills       Bill[]
+  claims      InsuranceClaim[]
+  
+  @@index([providerId])
+  @@index([patientId])
+  @@index([policyNumber])
+  @@index([effectiveDate, expirationDate])
+  @@map("insurance_policies")
+}
+
+model BillingCode {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50) // CPT, ICD-10, HCPCS
+  codeType    String   @db.VarChar(20) // CPT, ICD10, HCPCS
+  description String   @db.VarChar(1000)
+  category    String?  @db.VarChar(100)
+  
+  // Default pricing (can be overridden by fee schedule)
+  defaultCharge Decimal? @db.Decimal(10, 2)
+  
+  active      Boolean  @default(true)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations
+  billLineItems BillLineItem[]
+  feeScheduleItems FeeScheduleItem[]
+  
+  @@index([code])
+  @@index([codeType])
+  @@index([active])
+  @@map("billing_codes")
+}
+
+model FeeSchedule {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @db.VarChar(200)
+  description String?  @db.Text
+  scheduleType String  @db.VarChar(50) // STANDARD, INSURANCE, CASH_PAY, SELF_PAY
+  
+  // Scope
+  insuranceProviderId String? @db.Uuid
+  effectiveDate DateTime @default(now()) @db.Date
+  expirationDate DateTime? @db.Date
+  
+  active      Boolean  @default(true)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  provider    InsuranceProvider? @relation(fields: [insuranceProviderId], references: [id])
+  items       FeeScheduleItem[]
+  
+  @@index([scheduleType])
+  @@index([insuranceProviderId])
+  @@index([effectiveDate, expirationDate])
+  @@map("fee_schedules")
+}
+
+model FeeScheduleItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  scheduleId  String   @db.Uuid
+  billingCodeId String @db.Uuid
+  
+  // Pricing
+  amount      Decimal  @db.Decimal(10, 2)
+  unit        String?  @db.VarChar(50)
+  
+  // Effective dates
+  effectiveDate DateTime @default(now()) @db.Date
+  expirationDate DateTime? @db.Date
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  version     Int      @default(1)
+  
+  // Relations
+  schedule    FeeSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  billingCode BillingCode @relation(fields: [billingCodeId], references: [id])
+  
+  @@unique([scheduleId, billingCodeId, effectiveDate])
+  @@index([scheduleId])
+  @@index([billingCodeId])
+  @@map("fee_schedule_items")
+}
+
+// Bill (Invoice) - groups billable items
+model Bill {
+  id          String   @id @default(uuid()) @db.Uuid
+  billNumber  String   @unique @db.VarChar(50) // Human-readable bill ID
+  
+  // Patient information
+  patientId   String   @db.Uuid
+  
+  // Insurance
+  insurancePolicyId String? @db.Uuid
+  
+  // Billing period
+  billDate    DateTime @default(now()) @db.Date
+  dueDate     DateTime @db.Date
+  
+  // Amounts (computed from line items)
+  subtotal    Decimal  @db.Decimal(10, 2)
+  tax         Decimal  @default(0) @db.Decimal(10, 2)
+  discount    Decimal  @default(0) @db.Decimal(10, 2)
+  totalAmount Decimal  @db.Decimal(10, 2)
+  paidAmount  Decimal  @default(0) @db.Decimal(10, 2)
+  balance     Decimal  @db.Decimal(10, 2) // totalAmount - paidAmount
+  
+  // Status
+  status      BillStatus @default(DRAFT)
+  sentAt      DateTime? @db.Timestamptz(6)
+  paidAt      DateTime? @db.Timestamptz(6)
+  
+  // Notes
+  notes       String?  @db.Text
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  policy      InsurancePolicy? @relation(fields: [insurancePolicyId], references: [id])
+  lineItems   BillLineItem[]
+  paymentAllocations PaymentAllocation[]
+  adjustments BillingAdjustment[]
+  claims      InsuranceClaim[]
+  
+  @@index([billNumber])
+  @@index([patientId])
+  @@index([insurancePolicyId])
+  @@index([status])
+  @@index([billDate])
+  @@index([dueDate])
+  @@map("bills")
+}
+
+// CRITICAL: Every line item MUST reference a DomainEvent
+// This ensures complete traceability from billing back to clinical events
+model BillLineItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  billId      String   @db.Uuid
+  
+  // Billing details
+  billingCodeId String @db.Uuid
+  description String   @db.VarChar(1000)
+  quantity    Decimal  @db.Decimal(10, 3)
+  unitPrice   Decimal  @db.Decimal(10, 2)
+  lineTotal   Decimal  @db.Decimal(10, 2)
+  
+  // Service date
+  serviceDate DateTime @db.Date
+  
+  // CRITICAL: Event-driven anchor
+  // This line item was created from a DomainEvent
+  // REQUIRED: Every billable item must trace to a clinical/inventory event
+  triggeringEventId String @db.Uuid // DomainEvent that created this charge
+  
+  // Clinical context (for traceability)
+  caseId      String?  @db.Uuid // Surgical case
+  recordId    String?  @db.Uuid // Medical record
+  usageId     String?  @db.Uuid // Inventory usage (if from inventory consumption)
+  
+  // Procedure context
+  procedureCode String? @db.VarChar(50) // CPT code
+  procedureName String? @db.VarChar(500)
+  
+  // Notes
+  notes       String?  @db.Text
+  
+  // Audit (immutable after creation)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1) // Always 1 - immutable
+  
+  // Relations
+  bill        Bill              @relation(fields: [billId], references: [id], onDelete: Cascade)
+  billingCode BillingCode       @relation(fields: [billingCodeId], references: [id])
+  case        SurgicalCase?     @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  record      MedicalRecord?    @relation(fields: [recordId], references: [id], onDelete: SetNull)
+  usage       InventoryUsage?   @relation("BillLineItemUsage", fields: [usageId], references: [id], onDelete: SetNull)
+  triggeringEvent DomainEvent   @relation("BillLineItemEvent", fields: [triggeringEventId], references: [id])
+  adjustments BillingAdjustment[]
+  paymentAllocations PaymentAllocation[]
+  
+  // INVARIANT: This record is IMMUTABLE after creation
+  // Never UPDATE or DELETE - only INSERT
+  // To correct: create BillingAdjustment, not modify this
+  
+  @@index([billId])
+  @@index([billingCodeId])
+  @@index([triggeringEventId]) // Critical for event traceability
+  @@index([caseId])
+  @@index([recordId])
+  @@index([usageId])
+  @@index([serviceDate])
+  @@map("bill_line_items")
+}
+
+// Append-only billing adjustments
+// Never modify BillLineItem directly - create an adjustment instead
+model BillingAdjustment {
+  id          String   @id @default(uuid()) @db.Uuid
+  billId      String   @db.Uuid
+  lineItemId  String?  @db.Uuid // Optional: adjustment to specific line item
+  
+  // Adjustment details
+  adjustmentType BillingAdjustmentType
+  amount      Decimal  @db.Decimal(10, 2) // Positive or negative
+  reason      String   @db.Text // Why this adjustment was made
+  referenceNumber String? @db.VarChar(100) // Reference to authorization, etc.
+  
+  // CRITICAL: Event-driven anchor
+  // This adjustment was authorized by a DomainEvent
+  triggeringEventId String @db.Uuid // DomainEvent that authorized this adjustment
+  
+  // Audit (immutable)
+  adjustedAt  DateTime @default(now()) @db.Timestamptz(6)
+  adjustedBy  String?  @db.Uuid
+  version     Int      @default(1) // Always 1 - immutable
+  
+  // Relations
+  bill        Bill     @relation(fields: [billId], references: [id], onDelete: Cascade)
+  lineItem    BillLineItem? @relation(fields: [lineItemId], references: [id], onDelete: SetNull)
+  triggeringEvent DomainEvent @relation("BillingAdjustmentEvent", fields: [triggeringEventId], references: [id])
+  
+  // INVARIANT: Immutable after creation
+  // Supports financial reconciliation and audit
+  
+  @@index([billId])
+  @@index([lineItemId])
+  @@index([triggeringEventId])
+  @@index([adjustedAt])
+  @@map("billing_adjustments")
+}
+
+model Payment {
+  id          String   @id @default(uuid()) @db.Uuid
+  paymentNumber String @unique @db.VarChar(50)
+  
+  // Payment details
+  patientId   String   @db.Uuid
+  amount      Decimal  @db.Decimal(10, 2)
+  paymentDate DateTime @default(now()) @db.Date
+  paymentMethod String @db.VarChar(50) // CASH, CHECK, CREDIT_CARD, DEBIT_CARD, ACH, WIRE, INSURANCE
+  
+  // Payment source
+  paymentSource String @db.VarChar(50) // PATIENT, INSURANCE, THIRD_PARTY
+  insuranceClaimId String? @db.Uuid
+  
+  // Reference information
+  referenceNumber String? @db.VarChar(100)
+  checkDate    DateTime? @db.Date
+  
+  // Status
+  status      PaymentStatus @default(PENDING)
+  processedAt DateTime? @db.Timestamptz(6)
+  
+  // CRITICAL: Event-driven anchor
+  // This payment was recorded via a DomainEvent
+  triggeringEventId String? @db.Uuid // DomainEvent that recorded this payment
+  
+  // Notes
+  notes       String?  @db.Text
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  patient     Patient?  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  claim       InsuranceClaim? @relation(fields: [insuranceClaimId], references: [id], onDelete: SetNull)
+  allocations PaymentAllocation[]
+  triggeringEvent DomainEvent? @relation("PaymentEvent", fields: [triggeringEventId], references: [id])
+  appointmentPayment Appointment? @relation("AppointmentPayment")
+  appointmentRefund Appointment? @relation("AppointmentRefund")
+  
+  @@index([paymentNumber])
+  @@index([patientId])
+  @@index([paymentDate])
+  @@index([status])
+  @@index([triggeringEventId])
+  @@map("payments")
+}
+
+model PaymentAllocation {
+  id          String   @id @default(uuid()) @db.Uuid
+  paymentId   String   @db.Uuid
+  billId      String?  @db.Uuid
+  lineItemId  String?  @db.Uuid
+  
+  amount      Decimal  @db.Decimal(10, 2)
+  
+  // Audit
+  allocatedAt DateTime @default(now()) @db.Timestamptz(6)
+  allocatedBy String?  @db.Uuid
+  
+  // Relations
+  payment     Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  bill        Bill?    @relation(fields: [billId], references: [id], onDelete: Restrict)
+  lineItem    BillLineItem? @relation(fields: [lineItemId], references: [id], onDelete: Restrict)
+  
+  @@index([paymentId])
+  @@index([billId])
+  @@index([lineItemId])
+  @@map("payment_allocations")
+}
+
+model InsuranceClaim {
+  id          String   @id @default(uuid()) @db.Uuid
+  claimNumber String   @unique @db.VarChar(50)
+  externalClaimId String? @unique @db.VarChar(100)
+  
+  // Patient and policy
+  patientId   String   @db.Uuid
+  insurancePolicyId String @db.Uuid
+  billId      String   @db.Uuid // Bill being claimed
+  
+  // Claim details
+  claimType   String   @db.VarChar(50) // PRIMARY, SECONDARY, TERTIARY
+  totalBilled Decimal  @db.Decimal(10, 2)
+  totalPaid   Decimal  @default(0) @db.Decimal(10, 2)
+  patientResponsibility Decimal @default(0) @db.Decimal(10, 2)
+  
+  // Dates
+  serviceFromDate DateTime @db.Date
+  serviceToDate   DateTime @db.Date
+  submittedAt     DateTime? @db.Timestamptz(6)
+  respondedAt     DateTime? @db.Timestamptz(6)
+  
+  // Status
+  status      String   @default("DRAFT") @db.VarChar(50) // DRAFT, SUBMITTED, ACCEPTED, REJECTED, DENIED, PAID, PARTIAL
+  rejectionReason String? @db.Text
+  
+  // EDI information
+  ediFormat   String?  @db.VarChar(50)
+  submissionFile String? @db.VarChar(1000)
+  responseFile    String? @db.VarChar(1000)
+  
+  // CRITICAL: Event-driven anchor
+  // This claim was submitted via a DomainEvent
+  triggeringEventId String? @db.Uuid
+  
+  // Notes
+  notes       String?  @db.Text
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  policy      InsurancePolicy @relation(fields: [insurancePolicyId], references: [id])
+  bill        Bill            @relation(fields: [billId], references: [id])
+  payments    Payment[]
+  triggeringEvent DomainEvent? @relation("InsuranceClaimEvent", fields: [triggeringEventId], references: [id])
+  
+  @@index([claimNumber])
+  @@index([externalClaimId])
+  @@index([patientId])
+  @@index([billId])
+  @@index([status])
+  @@index([triggeringEventId])
+  @@map("insurance_claims")
+}

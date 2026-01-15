@@ -1,0 +1,238 @@
+// ============================================================================
+// PDF CONSENT ANNOTATION SYSTEM - SCHEMA ADDITIONS
+// ============================================================================
+// This file contains schema additions for the Interactive PDF Consent Annotation System
+// Add these to consent.prisma file
+//
+// Changes Required:
+// 1. Add AnnotationType enum
+// 2. Add PDFConsentAnnotation model
+// 3. Enhance PDFConsentSignature model (add position, hash, userAgent fields)
+// 4. Enhance PDFConsent model (add annotation tracking fields)
+// 5. Add User relation for annotations (in rbac.prisma)
+// ============================================================================
+
+// ============================================================================
+// 1. NEW ENUM: AnnotationType
+// ============================================================================
+// Add this enum after SignerType enum (around line 22)
+
+enum AnnotationType {
+  HIGHLIGHT      // Text highlighting
+  COMMENT        // Sticky note/comment
+  TEXT_EDIT      // Text editing (placeholder values only)
+  DRAWING        // Freehand drawing
+  ARROW          // Arrow annotation
+  RECTANGLE      // Rectangle annotation
+  CIRCLE         // Circle annotation
+}
+
+// ============================================================================
+// 2. NEW MODEL: PDFConsentAnnotation
+// ============================================================================
+// Add this model after PDFConsentSignature model (around line 732)
+
+// PDF Consent Annotation - User-created annotations on PDF documents
+// Supports highlights, comments, drawings, and other annotation types
+// Immutable after consent is SIGNED (isImmutable flag)
+model PDFConsentAnnotation {
+  id          String   @id @default(uuid()) @db.Uuid
+  consentId   String   @db.Uuid
+  
+  // Annotation Type
+  annotationType AnnotationType // HIGHLIGHT, COMMENT, TEXT_EDIT, DRAWING, ARROW, RECTANGLE, CIRCLE
+  
+  // PDF Position (PDF coordinate system - points, not pixels)
+  pageNumber  Int      @db.Integer // 1-indexed page number
+  x           Float    @db.DoublePrecision // X coordinate (PDF points)
+  y           Float    @db.DoublePrecision // Y coordinate (PDF points)
+  width       Float?   @db.DoublePrecision // Width (for rectangles, highlights, circles)
+  height      Float?   @db.DoublePrecision // Height (for rectangles, highlights, circles)
+  coordinates Json?    @db.JsonB // Complex shapes (polygons, freehand paths)
+  // Format: {"type": "polygon", "points": [[x1,y1], [x2,y2], ...]} or
+  //         {"type": "path", "commands": [...]}
+  
+  // Content
+  content     String?  @db.Text // Text content (for comments, text edits)
+  color       String   @db.VarChar(7) // Hex color (#RRGGBB), e.g., "#FF0000"
+  
+  // Metadata
+  createdById String   @db.Uuid
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  deletedAt   DateTime? @db.Timestamptz(6) // Soft delete (before SIGNED state)
+  
+  // State Protection - Set to true when consent status becomes SIGNED
+  isImmutable Boolean  @default(false) // Prevents edits/deletes after consent is SIGNED
+  
+  // Relations
+  consent     PDFConsent @relation(fields: [consentId], references: [id], onDelete: Cascade)
+  createdBy   User       @relation("PDFConsentAnnotationCreator", fields: [createdById], references: [id])
+  
+  // Event Linking (optional - for DomainEvent integration)
+  createdEventId String?  @db.Uuid // DomainEvent for creation (if event sourcing enabled)
+  deletedEventId String?  @db.Uuid // DomainEvent for deletion (if event sourcing enabled)
+  
+  @@index([consentId])
+  @@index([createdById])
+  @@index([pageNumber])
+  @@index([annotationType])
+  @@index([deletedAt])
+  @@index([isImmutable])
+  @@index([consentId, pageNumber]) // Composite index for page-based queries
+  @@map("pdf_consent_annotations")
+}
+
+// ============================================================================
+// 3. ENHANCEMENT: PDFConsentSignature
+// ============================================================================
+// Replace the existing PDFConsentSignature model (lines 710-732) with this enhanced version
+
+model PDFConsentSignature {
+  id          String     @id @default(uuid()) @db.Uuid
+  consentId   String     @db.Uuid
+  signerId    String?    @db.Uuid // User ID (nullable for external signers)
+  signerName  String     @db.VarChar(200) // Full name of signer
+  signerType  SignerType
+  signatureUrl String    @db.VarChar(1000) // URL to signature image/data
+  
+  // PDF Position (NEW - for inline signature placement)
+  pageNumber  Int?       @db.Integer // Page where signature is placed (1-indexed)
+  x           Float?     @db.DoublePrecision // X coordinate (PDF points)
+  y           Float?     @db.DoublePrecision // Y coordinate (PDF points)
+  width       Float?     @db.DoublePrecision // Signature width (PDF points)
+  height      Float?     @db.DoublePrecision // Signature height (PDF points)
+  
+  // Signature metadata
+  signedAt    DateTime   @default(now()) @db.Timestamptz(6)
+  ipAddress  String?    @db.VarChar(45) // IPv4 or IPv6
+  deviceInfo String?    @db.VarChar(500) // Device information if available
+  userAgent  String?    @db.VarChar(500) // NEW - Browser/user agent string (more specific than deviceInfo)
+  
+  // Cryptographic Integrity (NEW)
+  signatureHash String?  @db.VarChar(64) // SHA-256 hash of signature data for integrity verification
+  
+  // Relations
+  consent     PDFConsent @relation(fields: [consentId], references: [id], onDelete: Cascade)
+  signer      User?      @relation("PDFConsentSigner", fields: [signerId], references: [id])
+  
+  @@index([consentId])
+  @@index([signerId])
+  @@index([signerType])
+  @@index([signedAt])
+  @@index([pageNumber]) // NEW - Index for page-based queries
+  @@map("pdf_consent_signatures")
+}
+
+// ============================================================================
+// 4. ENHANCEMENT: PDFConsent
+// ============================================================================
+// Add these fields to the existing PDFConsent model (around line 682, after lockedAt)
+
+model PDFConsent {
+  id               String         @id @default(uuid()) @db.Uuid
+  patientId        String         @db.Uuid
+  consultationId   String?        @db.Uuid
+  templateId       String         @db.Uuid
+  status           ConsentStatus  @default(DRAFT)
+  
+  // PDF Documents
+  generatedPdfUrl  String?        @db.VarChar(1000) // Working document before signing (editable)
+  finalPdfUrl      String?        @db.VarChar(1000) // Immutable signed version (locked)
+  finalPdfHash     String?        @db.VarChar(64)   // SHA-256 hash of final PDF for integrity verification
+  
+  // Workflow tracking
+  sentForSignatureAt DateTime?     @db.Timestamptz(6)
+  lockedAt         DateTime?       @db.Timestamptz(6) // When document was locked after signing
+  
+  // Annotation State (NEW)
+  annotationVersion Int           @default(1) @db.Integer // Increments on annotation changes (optimistic locking)
+  lastAnnotationAt  DateTime?     @db.Timestamptz(6) // Last annotation timestamp (for audit timeline)
+  
+  // Audit
+  createdById      String         @db.Uuid
+  createdBy        User           @relation("PDFConsentCreator", fields: [createdById], references: [id])
+  archivedAt       DateTime?      @db.Timestamptz(6)
+  archivedById     String?        @db.Uuid
+  archivedBy       User?          @relation("PDFConsentArchivedBy", fields: [archivedById], references: [id])
+  version          Int            @default(1)
+  createdAt        DateTime       @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime       @updatedAt @db.Timestamptz(6)
+  
+  // Relations
+  template         ConsentTemplate @relation(fields: [templateId], references: [id])
+  patient          Patient         @relation("PDFConsentPatient", fields: [patientId], references: [id], onDelete: Restrict)
+  consultation     Consultation?   @relation("PDFConsentConsultation", fields: [consultationId], references: [id])
+  signatures       PDFConsentSignature[]
+  annotations      PDFConsentAnnotation[] // NEW - Relation to annotations
+  
+  @@index([patientId])
+  @@index([consultationId])
+  @@index([templateId])
+  @@index([status])
+  @@index([createdById])
+  @@index([archivedAt])
+  @@index([lockedAt]) // NEW - Index for locked document queries
+  @@map("pdf_consents")
+}
+
+// ============================================================================
+// 5. ENHANCEMENT: User Model (in rbac.prisma)
+// ============================================================================
+// Add this relation to the User model in backend/prisma/schema/rbac.prisma
+// Add it after the existing pdfConsentSignatures relation (around line 70)
+
+// In User model, add:
+//   pdfConsentAnnotations PDFConsentAnnotation[] @relation("PDFConsentAnnotationCreator")
+
+// ============================================================================
+// MIGRATION NOTES
+// ============================================================================
+//
+// 1. All new fields in PDFConsentSignature are nullable (backward compatible)
+// 2. New fields in PDFConsent have defaults (backward compatible)
+// 3. PDFConsentAnnotation is a new table (no impact on existing data)
+// 4. AnnotationType enum is new (no impact on existing data)
+//
+// Migration Steps:
+// 1. Add AnnotationType enum
+// 2. Create PDFConsentAnnotation table
+// 3. Add new fields to PDFConsentSignature (ALTER TABLE with nullable columns)
+// 4. Add new fields to PDFConsent (ALTER TABLE with default values)
+// 5. Add indexes
+// 6. Add User relation (ALTER TABLE to add foreign key)
+//
+// ============================================================================
+// RLS (Row-Level Security) CONSIDERATIONS
+// ============================================================================
+//
+// PDFConsentAnnotation should inherit RLS from PDFConsent:
+// - Users can only see annotations for consents they have access to
+// - RLS policies on PDFConsent automatically apply to annotations via consentId
+// - No additional RLS policies needed if PDFConsent RLS is properly configured
+//
+// ============================================================================
+// COMPLIANCE NOTES
+// ============================================================================
+//
+// Medical Record Keeping Compliance:
+// - ✅ Immutability: isImmutable flag prevents edits after SIGNED
+// - ✅ Audit Trail: createdById, createdAt, DomainEvent integration
+// - ✅ Integrity: Coordinates stored for verification
+// - ✅ Attribution: All annotations linked to User via createdById
+// - ✅ Soft Delete: deletedAt allows audit retention while hiding from UI
+//
+// HIPAA Compliance:
+// - ✅ Access Control: RLS enforced via consentId (inherited from PDFConsent)
+// - ✅ Audit Logging: All operations should generate DomainEvent
+// - ✅ Data Minimization: Only store necessary annotation data
+// - ✅ Retention: Soft delete pattern allows data retention for audit
+
+
+
+
+
+
+
+
+

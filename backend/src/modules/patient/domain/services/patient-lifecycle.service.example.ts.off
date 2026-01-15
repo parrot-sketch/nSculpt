@@ -1,0 +1,544 @@
+/**
+ * Patient Lifecycle Service - Example Usage
+ * 
+ * This file demonstrates how to use the PatientLifecycleService in various contexts.
+ * These are real, production-ready examples that can be used in controllers and other services.
+ */
+
+import { Injectable } from '@nestjs/common';
+import { PatientLifecycleService, LifecycleActor, LifecycleTransitionContext } from './patient-lifecycle.service';
+import { PatientLifecycleState } from '../patient-lifecycle-state.enum';
+
+/**
+ * Example 1: Patient Self-Registration
+ * 
+ * When a patient registers themselves, they start at REGISTERED state.
+ * An admin must verify them before they can proceed.
+ */
+@Injectable()
+export class ExamplePatientRegistrationService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async handlePatientSelfRegistration(patientId: string) {
+    // Patient starts at REGISTERED state
+    // This is typically set during patient creation, but we can also transition explicitly
+    const actor: LifecycleActor = {
+      userId: 'system', // System-initiated
+      role: 'SYSTEM',
+    };
+
+    // Transition to REGISTERED (if not already there)
+    try {
+      await this.lifecycleService.transitionPatient(
+        patientId,
+        PatientLifecycleState.REGISTERED,
+        actor,
+      );
+    } catch (error) {
+      // Handle error - patient might already be in REGISTERED state
+      console.error('Error transitioning patient to REGISTERED:', error);
+    }
+  }
+}
+
+/**
+ * Example 2: Admin Verifying Patient
+ * 
+ * When an admin verifies a patient's identity, transition from REGISTERED to VERIFIED.
+ */
+@Injectable()
+export class ExamplePatientVerificationService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async verifyPatient(patientId: string, adminUserId: string) {
+    const actor: LifecycleActor = {
+      userId: adminUserId,
+      role: 'ADMIN', // Only ADMIN can verify
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.VERIFIED,
+      actor,
+      {
+        reason: 'Admin verified patient identity',
+      },
+    );
+  }
+}
+
+/**
+ * Example 3: Patient Completing Intake
+ * 
+ * When a patient completes their intake forms, transition from INTAKE_IN_PROGRESS to INTAKE_COMPLETED.
+ */
+@Injectable()
+export class ExamplePatientIntakeService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async markIntakeCompleted(patientId: string, patientUserId: string, intakeId: string) {
+    const actor: LifecycleActor = {
+      userId: patientUserId,
+      role: 'PATIENT', // Patient completes their own intake
+    };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Patient completed intake forms',
+      intakeId,
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.INTAKE_COMPLETED,
+      actor,
+      context,
+    );
+  }
+
+  /**
+   * Nurse verifies intake forms and transitions to INTAKE_VERIFIED
+   */
+  async verifyIntake(patientId: string, nurseUserId: string, intakeId: string) {
+    const actor: LifecycleActor = {
+      userId: nurseUserId,
+      role: 'NURSE', // NURSE or ADMIN can verify intake
+    };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Nurse verified intake forms',
+      intakeId,
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.INTAKE_VERIFIED,
+      actor,
+      context,
+    );
+  }
+}
+
+/**
+ * Example 4: Patient Requesting Consultation
+ * 
+ * When a patient requests a consultation, transition from INTAKE_VERIFIED to CONSULTATION_REQUESTED.
+ */
+@Injectable()
+export class ExampleConsultationRequestService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async requestConsultation(patientId: string, patientUserId: string, consultationRequestId: string) {
+    const actor: LifecycleActor = {
+      userId: patientUserId,
+      role: 'PATIENT',
+    };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Patient requested consultation',
+      consultationRequestId,
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.CONSULTATION_REQUESTED,
+      actor,
+      context,
+    );
+  }
+
+  /**
+   * Admin approves consultation request and transitions to CONSULTATION_APPROVED
+   */
+  async approveConsultationRequest(
+    patientId: string,
+    adminUserId: string,
+    consultationRequestId: string,
+  ) {
+    const actor: LifecycleActor = {
+      userId: adminUserId,
+      role: 'ADMIN', // ADMIN or DOCTOR can approve
+    };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Admin approved consultation request',
+      consultationRequestId,
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.CONSULTATION_APPROVED,
+      actor,
+      context,
+    );
+  }
+}
+
+/**
+ * Example 5: Appointment Scheduling
+ * 
+ * When an appointment is scheduled after approval, transition to APPOINTMENT_SCHEDULED.
+ * This is typically done automatically by the system after appointment creation.
+ */
+@Injectable()
+export class ExampleAppointmentSchedulingService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async scheduleAppointment(patientId: string, appointmentId: string, adminUserId?: string) {
+    const actor: LifecycleActor = adminUserId
+      ? {
+          userId: adminUserId,
+          role: 'ADMIN',
+        }
+      : {
+          userId: 'system',
+          role: 'SYSTEM', // System can automatically schedule
+        };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Appointment scheduled after approval',
+      appointmentId,
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.APPOINTMENT_SCHEDULED,
+      actor,
+      context,
+    );
+  }
+}
+
+/**
+ * Example 6: Doctor Completing Consultation
+ * 
+ * When a doctor completes a consultation, transition from APPOINTMENT_SCHEDULED to CONSULTATION_COMPLETED.
+ */
+@Injectable()
+export class ExampleConsultationCompletionService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async completeConsultation(patientId: string, doctorUserId: string, consultationId: string) {
+    const actor: LifecycleActor = {
+      userId: doctorUserId,
+      role: 'DOCTOR', // DOCTOR, SURGEON, or ADMIN can complete consultation
+    };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Doctor completed consultation',
+      consultationId,
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.CONSULTATION_COMPLETED,
+      actor,
+      context,
+    );
+  }
+}
+
+/**
+ * Example 7: Procedure Planning
+ * 
+ * When a doctor creates a procedure plan, transition from CONSULTATION_COMPLETED to PROCEDURE_PLANNED.
+ */
+@Injectable()
+export class ExampleProcedurePlanningService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async planProcedure(patientId: string, doctorUserId: string, procedurePlanId: string) {
+    const actor: LifecycleActor = {
+      userId: doctorUserId,
+      role: 'DOCTOR', // DOCTOR, SURGEON, or ADMIN can plan procedures
+    };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Doctor created procedure plan',
+      procedurePlanId,
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.PROCEDURE_PLANNED,
+      actor,
+      context,
+    );
+  }
+}
+
+/**
+ * Example 8: Consent Signing
+ * 
+ * When a patient signs consent, transition from PROCEDURE_PLANNED to CONSENT_SIGNED.
+ */
+@Injectable()
+export class ExampleConsentSigningService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async signConsent(patientId: string, patientUserId: string, consentId: string) {
+    const actor: LifecycleActor = {
+      userId: patientUserId,
+      role: 'PATIENT', // PATIENT signs consent
+    };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Patient signed consent',
+      consentId,
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.CONSENT_SIGNED,
+      actor,
+      context,
+    );
+  }
+}
+
+/**
+ * Example 9: Surgery Scheduling
+ * 
+ * When surgery is scheduled after consent is signed, transition to SURGERY_SCHEDULED.
+ */
+@Injectable()
+export class ExampleSurgerySchedulingService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async scheduleSurgery(patientId: string, adminUserId: string, surgicalCaseId: string) {
+    const actor: LifecycleActor = {
+      userId: adminUserId,
+      role: 'ADMIN', // ADMIN, DOCTOR, or SURGEON can schedule surgery
+    };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Surgery scheduled after consent signed',
+      surgicalCaseId,
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.SURGERY_SCHEDULED,
+      actor,
+      context,
+    );
+  }
+}
+
+/**
+ * Example 10: Surgery Completion
+ * 
+ * When surgery is completed, transition from SURGERY_SCHEDULED to SURGERY_COMPLETED.
+ * System automatically transitions to FOLLOW_UP after surgery completion.
+ */
+@Injectable()
+export class ExampleSurgeryCompletionService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async completeSurgery(patientId: string, doctorUserId: string, surgicalCaseId: string) {
+    const actor: LifecycleActor = {
+      userId: doctorUserId,
+      role: 'DOCTOR', // DOCTOR, SURGEON, or ADMIN can mark surgery complete
+    };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Surgery completed',
+      surgicalCaseId,
+    };
+
+    // Transition to SURGERY_COMPLETED
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.SURGERY_COMPLETED,
+      actor,
+      context,
+    );
+
+    // System automatically transitions to FOLLOW_UP
+    // This would typically be done by an event handler listening to SURGERY_COMPLETED event
+    // For now, we'll do it here as an example
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.FOLLOW_UP,
+      {
+        userId: 'system',
+        role: 'SYSTEM',
+      },
+      {
+        reason: 'Automatic transition to follow-up after surgery completion',
+        surgicalCaseId,
+      },
+    );
+  }
+}
+
+/**
+ * Example 11: Patient Discharge
+ * 
+ * When a doctor discharges a patient, transition from FOLLOW_UP to DISCHARGED (terminal state).
+ */
+@Injectable()
+export class ExamplePatientDischargeService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async dischargePatient(patientId: string, doctorUserId: string) {
+    const actor: LifecycleActor = {
+      userId: doctorUserId,
+      role: 'DOCTOR', // DOCTOR, SURGEON, or ADMIN can discharge
+    };
+
+    const context: LifecycleTransitionContext = {
+      reason: 'Patient discharged after follow-up',
+    };
+
+    await this.lifecycleService.transitionPatient(
+      patientId,
+      PatientLifecycleState.DISCHARGED,
+      actor,
+      context,
+    );
+  }
+}
+
+/**
+ * Example 12: Checking Current State and Allowed Transitions
+ * 
+ * Useful for UI/UX to show available actions.
+ */
+@Injectable()
+export class ExampleLifecycleQueryService {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async getPatientLifecycleInfo(patientId: string, actorUserId: string, actorRole: string) {
+    const actor: LifecycleActor = {
+      userId: actorUserId,
+      role: actorRole,
+    };
+
+    // Get current state
+    const currentState = await this.lifecycleService.getCurrentState(patientId);
+
+    // Get allowed next states
+    const allowedStates = await this.lifecycleService.getAllowedNextStates(patientId);
+
+    // Filter allowed states by actor's permissions
+    const allowedTransitions: Array<{
+      state: PatientLifecycleState;
+      canTransition: boolean;
+    }> = [];
+
+    for (const state of allowedStates) {
+      const canTransition = await this.lifecycleService.canTransition(patientId, state, actor);
+      allowedTransitions.push({
+        state,
+        canTransition,
+      });
+    }
+
+    return {
+      currentState,
+      allowedTransitions: allowedTransitions.filter(t => t.canTransition).map(t => t.state),
+    };
+  }
+}
+
+/**
+ * Example 13: Error Handling in Controller
+ * 
+ * How to handle lifecycle errors in a controller.
+ */
+@Injectable()
+export class ExamplePatientController {
+  constructor(
+    private readonly lifecycleService: PatientLifecycleService,
+  ) {}
+
+  async verifyPatientEndpoint(patientId: string, adminUserId: string) {
+    try {
+      await this.lifecycleService.transitionPatient(
+        patientId,
+        PatientLifecycleState.VERIFIED,
+        {
+          userId: adminUserId,
+          role: 'ADMIN',
+        },
+      );
+
+      return {
+        success: true,
+        message: 'Patient verified successfully',
+      };
+    } catch (error: any) {
+      // Handle specific lifecycle errors
+      if (error instanceof InvalidPatientLifecycleTransitionError) {
+        return {
+          success: false,
+          error: 'INVALID_TRANSITION',
+          message: error.message,
+          details: {
+            from: error.fromState,
+            to: error.toState,
+            allowed: error.allowedTransitions,
+          },
+        };
+      }
+
+      if (error instanceof UnauthorizedLifecycleTransitionError) {
+        return {
+          success: false,
+          error: 'UNAUTHORIZED',
+          message: error.message,
+          details: {
+            actorRole: error.actorRole,
+            requiredRoles: error.requiredRoles,
+          },
+        };
+      }
+
+      if (error instanceof MissingRequiredDataError) {
+        return {
+          success: false,
+          error: 'MISSING_DATA',
+          message: error.message,
+          details: {
+            missingData: error.missingData,
+          },
+        };
+      }
+
+      if (error instanceof PatientLifecycleNotFoundError) {
+        return {
+          success: false,
+          error: 'PATIENT_NOT_FOUND',
+          message: error.message,
+        };
+      }
+
+      // Generic error
+      throw error;
+    }
+  }
+}

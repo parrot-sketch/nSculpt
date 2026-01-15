@@ -1,0 +1,19 @@
+// Enterprise Surgical EHR - Base Schema Configuration
+// This file contains generator and datasource configuration
+
+generator client {
+  provider = "prisma-client-js"
+  // Explicitly target Debian/glibc platforms for Docker compatibility
+  // Supports both Debian-based containers and native Linux development
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+  // Note: Full-text search indexes should be created via raw SQL migrations
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // Note: PostgreSQL extensions (uuid-ossp, pg_trgm) should be created via migrations
+  // Example: CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+  // Example: CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+}
+

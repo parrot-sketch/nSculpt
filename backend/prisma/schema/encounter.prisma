@@ -1,0 +1,68 @@
+// Encounter: An interaction between a patient and healthcare provider(s)
+// The "Container" for all services delivered during a visit.
+model Encounter {
+  id          String   @id @default(uuid()) @db.Uuid
+  patientId   String   @db.Uuid
+  
+  // Classification
+  status      EncounterStatus // PLANNED, ARRIVED, IN_PROGRESS, FINISHED, CANCELLED
+  class       EncounterClass  // AMBULATORY, INPATIENT, SURGICAL, VIRTUAL
+  type        String          // "Initial Consult", "Post-Op Followup", "Surgical Procedure"
+  
+  // Timing
+  periodStart DateTime @default(now()) @db.Timestamptz(6)
+  periodEnd   DateTime? @db.Timestamptz(6)
+  
+  // Context
+  appointmentId String? @unique @db.Uuid // Link to scheduling
+  surgicalCaseId String? @unique @db.Uuid // Link to surgery (if applicable)
+  locationId    String? @db.Uuid
+  serviceProviderId String @db.Uuid // The organization/department
+
+  // LOCKING & CLOSURE (Safety)
+  locked      Boolean   @default(false) // Hard freeze of ALL related data
+  lockedAt    DateTime? @db.Timestamptz(6)
+  lockedById  String?   @db.Uuid
+
+  // AUDIT (Mandatory)
+  createdById String    @db.Uuid // Immutable
+  updatedById String?   @db.Uuid
+
+  // Relations
+  lockedBy    User?     @relation("EncounterLocker", fields: [lockedById], references: [id])
+  createdBy   User      @relation("EncounterCreator", fields: [createdById], references: [id])
+  updatedBy   User?     @relation("EncounterUpdater", fields: [updatedById], references: [id])
+  
+  patient       Patient @relation(fields: [patientId], references: [id])
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id])
+  surgicalCase  SurgicalCase? @relation(fields: [surgicalCaseId], references: [id])
+  diagnoses     Condition[] // Problems addressed this encounter
+  observations  Observation[] // Vitals taken this encounter
+  notes         EMRNote[] // Documentation - Linked via existing EMRNote model if possible, or we might need to update EMRNote
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  
+  @@index([patientId])
+  @@index([locked])
+  @@index([status])
+  @@index([periodStart])
+  @@map("encounters")
+}
+
+enum EncounterStatus {
+  PLANNED
+  ARRIVED
+  IN_PROGRESS
+  FINISHED
+  CANCELLED
+}
+
+enum EncounterClass {
+  AMBULATORY  // Outpatient visit
+  INPATIENT   // Admitted (overnight)
+  SURGICAL    // Day Surgery
+  EMERGENCY   // Urgent Care
+  VIRTUAL     // Telehealth
+}

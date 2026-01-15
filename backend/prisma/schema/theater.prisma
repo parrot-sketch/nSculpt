@@ -1,0 +1,175 @@
+// Theater: Scheduling & Booking
+// Operating theaters, surgical cases, reservations, and resource allocation
+
+model Department {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50) // e.g., "OR", "PACU"
+  name        String   @db.VarChar(200)
+  description String?  @db.Text
+  active      Boolean  @default(true)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  updatedBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  users       User[]
+  theaters    OperatingTheater[]
+  
+  @@index([code])
+  @@map("departments")
+}
+
+model OperatingTheater {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50) // e.g., "OR-1", "OR-2"
+  name        String   @db.VarChar(200)
+  description String?  @db.Text
+  departmentId String  @db.Uuid
+  capacity    Int?     // Max concurrent staff/patients
+  active      Boolean  @default(true)
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  updatedBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  department      Department         @relation(fields: [departmentId], references: [id])
+  reservations    TheaterReservation[]
+  resourceAllocations ResourceAllocation[]
+  
+  @@index([code])
+  @@index([departmentId])
+  @@index([active])
+  @@map("operating_theaters")
+}
+
+model SurgicalCase {
+  id          String   @id @default(uuid()) @db.Uuid
+  caseNumber  String   @unique @db.VarChar(50) // Human-readable case ID
+  patientId   String   @db.Uuid // Reference to patient (external or internal)
+  procedurePlanId String @db.Uuid // REQUIRED: Link to ProcedurePlan (surgery must be based on approved plan)
+  procedureName String @db.VarChar(500) // Denormalized from ProcedurePlan for queries
+  procedureCode String? @db.VarChar(50) // CPT/ICD codes (denormalized from ProcedurePlan)
+  description String?  @db.Text // Denormalized from ProcedurePlan
+  estimatedDurationMinutes Int? @db.Integer // Denormalized from ProcedurePlan
+  priority    Int      @default(5) // 1-10, lower is more urgent
+  
+  status      String   @db.VarChar(50) // SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED, POSTPONED
+  scheduledStartAt DateTime @db.Timestamptz(6)
+  scheduledEndAt   DateTime @db.Timestamptz(6)
+  actualStartAt    DateTime? @db.Timestamptz(6)
+  actualEndAt      DateTime? @db.Timestamptz(6)
+  
+  primarySurgeonId String? @db.Uuid // References User
+  notes           String? @db.Text
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  updatedBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  patient         Patient? @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  procedurePlan   ProcedurePlan @relation(fields: [procedurePlanId], references: [id], onDelete: Restrict)
+  primarySurgeon  User?    @relation("SurgicalCasePrimarySurgeon", fields: [primarySurgeonId], references: [id])
+  createdByUser User? @relation("SurgicalCaseCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByUser User? @relation("SurgicalCaseUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  reservations    TheaterReservation[]
+  resourceAllocations ResourceAllocation[]
+  statusHistory   CaseStatusHistory[]
+  inventoryTransactions InventoryTransaction[]
+  inventoryUsages InventoryUsage[]
+  billLineItems   BillLineItem[]
+  
+  // Phase 3
+  encounter       Encounter?
+  
+  @@index([caseNumber])
+  @@index([patientId])
+  @@index([procedurePlanId]) // Critical for workflow validation
+  @@index([status])
+  @@index([scheduledStartAt, scheduledEndAt])
+  @@index([primarySurgeonId])
+  @@map("surgical_cases")
+}
+
+model TheaterReservation {
+  id          String   @id @default(uuid()) @db.Uuid
+  theaterId   String   @db.Uuid
+  caseId      String?  @db.Uuid // Nullable for maintenance/block time
+  reservedFrom DateTime @db.Timestamptz(6)
+  reservedUntil DateTime @db.Timestamptz(6)
+  
+  reservationType String @db.VarChar(50) // CASE, MAINTENANCE, BLOCK_TIME, EMERGENCY
+  status      String   @default("CONFIRMED") @db.VarChar(50) // CONFIRMED, CANCELLED, COMPLETED
+  
+  notes       String?  @db.Text
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  updatedBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  theater     OperatingTheater @relation(fields: [theaterId], references: [id], onDelete: Cascade)
+  case        SurgicalCase?    @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  resourceAllocations ResourceAllocation[]
+  
+  // CRITICAL: Prevent double-booking at database level
+  @@unique([theaterId, reservedFrom, reservedUntil], name: "unique_theater_time_slot")
+  @@index([theaterId, reservedFrom, reservedUntil])
+  @@index([caseId])
+  @@index([status])
+  @@index([reservedFrom, reservedUntil])
+  @@map("theater_reservations")
+}
+
+model ResourceAllocation {
+  id          String   @id @default(uuid()) @db.Uuid
+  reservationId String @db.Uuid
+  theaterId   String   @db.Uuid
+  caseId      String?  @db.Uuid
+  
+  resourceType String  @db.VarChar(50) // STAFF, EQUIPMENT, INVENTORY, SUPPLY
+  resourceId   String  @db.Uuid // Flexible reference
+  resourceName String  @db.VarChar(200) // Denormalized for queries
+  
+  role        String?  @db.VarChar(100) // For staff: "SURGEON", "NURSE", "ANESTHESIOLOGIST"
+  quantity    Int      @default(1)
+  
+  allocatedFrom DateTime @db.Timestamptz(6)
+  allocatedUntil DateTime @db.Timestamptz(6)
+  
+  status      String   @default("ALLOCATED") @db.VarChar(50) // ALLOCATED, RELEASED, CANCELLED
+  
+  // Audit
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  createdBy   String?  @db.Uuid
+  version     Int      @default(1)
+  
+  // Relations
+  reservation TheaterReservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  theater     OperatingTheater   @relation(fields: [theaterId], references: [id], onDelete: Cascade)
+  case        SurgicalCase?      @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  
+  @@index([reservationId])
+  @@index([theaterId])
+  @@index([caseId])
+  @@index([resourceType, resourceId])
+  @@index([allocatedFrom, allocatedUntil])
+  @@index([status])
+  @@map("resource_allocations")
+}
+
