@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "../client"
+		},
+		{
+			"path": "../backend"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../scripts"
+		}
+	],
+	"settings": {}
+}
